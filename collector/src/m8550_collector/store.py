@@ -83,3 +83,19 @@ class Store:
                     for c in clients
                 ],
             )
+
+    def latest_sample(self) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT ts, total_bytes, rx_rate, tx_rate, online "
+                "FROM samples ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "ts": row[0],
+                "total_bytes": row[1],
+                "rx_rate": row[2],
+                "tx_rate": row[3],
+                "online": bool(row[4]),
+            }

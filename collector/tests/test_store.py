@@ -135,3 +135,38 @@ def test_append_clients_allows_null_bandwidth(tmp_path):
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT bandwidth FROM clients").fetchone()
     assert row == (None,)
+
+
+def test_latest_sample_returns_most_recent(tmp_path):
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+
+    s.append_sample(1, total_bytes=100, rx_rate=None, tx_rate=None, online=True)
+    s.append_sample(2, total_bytes=200, rx_rate=20, tx_rate=10, online=True)
+    s.append_sample(3, total_bytes=300, rx_rate=20, tx_rate=10, online=True)
+
+    latest = s.latest_sample()
+    assert latest == {
+        "ts": 3,
+        "total_bytes": 300,
+        "rx_rate": 20,
+        "tx_rate": 10,
+        "online": True,
+    }
+
+
+def test_latest_sample_none_when_empty(tmp_path):
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+    assert s.latest_sample() is None
+
+
+def test_latest_sample_marks_offline_correctly(tmp_path):
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+    s.append_sample(1, total_bytes=None, rx_rate=None, tx_rate=None, online=False)
+    latest = s.latest_sample()
+    assert latest is not None and latest["online"] is False
