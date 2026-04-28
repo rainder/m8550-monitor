@@ -138,3 +138,49 @@ def test_snapshot_oserror_also_raises_connection_error():
     client = LibRouterClient(_lib=fake_lib)
     with pytest.raises(ConnectionError):
         client.snapshot()
+
+
+def test_snapshot_reauths_and_retries_on_first_failure():
+    """First call raises (session expired), authorize() is called, retry succeeds."""
+    from tplinkrouterc6u.common.exception import ClientException
+
+    fake_lib = MagicMock()
+
+    lte = MagicMock()
+    lte.total_statistics = 100
+    lte.cur_rx_speed = 50
+    lte.cur_tx_speed = 25
+    status = MagicMock()
+    status.devices = []
+
+    # First call to get_lte_status raises (simulating a dropped session).
+    # After authorize(), the next call returns successfully.
+    fake_lib.get_lte_status.side_effect = [
+        ClientException("session expired"),
+        lte,
+    ]
+    fake_lib.get_status.return_value = status
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.return_value = ("raw", [[]])
+
+    client = LibRouterClient(_lib=fake_lib)
+    snap = client.snapshot()
+
+    assert snap.total_bytes == 100
+    assert snap.rx_rate == 50
+    fake_lib.authorize.assert_called_once()
+
+
+def test_snapshot_raises_when_reauth_retry_also_fails():
+    """If both the first call AND the reauth+retry fail, raise ConnectionError."""
+    from tplinkrouterc6u.common.exception import ClientException
+
+    fake_lib = MagicMock()
+    fake_lib.get_lte_status.side_effect = ClientException("still dead")
+
+    client = LibRouterClient(_lib=fake_lib)
+    with pytest.raises(ConnectionError):
+        client.snapshot()
+    # authorize was attempted once, but the retry also failed.
+    fake_lib.authorize.assert_called_once()

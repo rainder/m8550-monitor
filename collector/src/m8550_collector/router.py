@@ -59,16 +59,16 @@ class LibRouterClient:
 
     def snapshot(self) -> RouterSnapshot:
         try:
-            lte = self._lib.get_lte_status()
-            status = self._lib.get_status()
-            stat_rows = self._fetch_stat_rows()
-        except OSError as e:
-            raise ConnectionError(str(e)) from e
-        except Exception as e:
-            # tplinkrouterc6u.common.exception.ClientException and friends
-            # bubble up here. We don't distinguish — anything raised by the
-            # library means "we couldn't get a clean reading".
-            raise ConnectionError(str(e)) from e
+            lte, status, stat_rows = self._fetch_all()
+        except (OSError, Exception) as first:
+            # Session likely expired (M8550 invalidates other sessions when
+            # the Tether app logs in, and ages out idle sessions). Re-auth
+            # and try once more before giving up.
+            try:
+                self._lib.authorize()
+                lte, status, stat_rows = self._fetch_all()
+            except Exception as retry:
+                raise ConnectionError(f"{first}; reauth retry: {retry}") from retry
 
         clients: list[RouterClientSnapshot] = []
         for d in status.devices:
@@ -92,6 +92,12 @@ class LibRouterClient:
             tx_rate=int(lte.cur_tx_speed) if lte.cur_tx_speed is not None else None,
             clients=clients,
         )
+
+    def _fetch_all(self):
+        lte = self._lib.get_lte_status()
+        status = self._lib.get_status()
+        stat_rows = self._fetch_stat_rows()
+        return lte, status, stat_rows
 
     def _fetch_stat_rows(self) -> dict[str, int]:
         """Map MAC → cumulative total_bytes, from DEV2_STAT_ENTRY."""
