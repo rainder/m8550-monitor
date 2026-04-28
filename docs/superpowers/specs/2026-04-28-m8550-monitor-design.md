@@ -84,23 +84,25 @@ home-assistant/
 
 ## Data model
 
+Schema reflects what the M8550 actually exposes (see [`docs/recon.md`](../../recon.md)): the WAN reports current ↓/↑ rates directly (no delta math) and a single combined cumulative counter; per-client traffic is only available as a combined RX+TX counter that the collector deltas into a bandwidth value.
+
 ```sql
 CREATE TABLE samples (
-  ts          INTEGER PRIMARY KEY,    -- unix seconds
-  rx_total    INTEGER,                -- cumulative bytes from router (NULL when offline)
-  tx_total    INTEGER,
-  rx_rate     INTEGER,                -- bytes/sec, derived in collector
-  tx_rate     INTEGER,
-  online      INTEGER NOT NULL        -- 0/1; 0 means router unreachable
+  ts            INTEGER PRIMARY KEY,    -- unix seconds
+  total_bytes   INTEGER,                -- combined RX+TX cumulative; NULL when offline
+  rx_rate       INTEGER,                -- bytes/sec, copied as-is from router (cur_rx_speed)
+  tx_rate       INTEGER,                -- bytes/sec, copied as-is (cur_tx_speed)
+  online        INTEGER NOT NULL        -- 0/1; 0 means router unreachable
 );
 
 CREATE TABLE clients (
-  ts          INTEGER,
-  mac         TEXT,
-  name        TEXT,
-  ip          TEXT,
-  rx_rate     INTEGER,                -- bytes/sec at this tick
-  tx_rate     INTEGER,
+  ts            INTEGER,
+  mac           TEXT,
+  name          TEXT,
+  ip            TEXT,
+  conn_type     TEXT,                   -- "host_2g" | "host_5g" | "wired"
+  total_bytes   INTEGER,                -- combined RX+TX cumulative for this MAC (raw from router)
+  bandwidth     INTEGER,                -- bytes/sec, derived from total_bytes delta; NULL on first sample / counter reset / gap
   PRIMARY KEY (ts, mac)
 );
 CREATE INDEX idx_clients_ts ON clients(ts);
@@ -108,26 +110,25 @@ CREATE INDEX idx_clients_ts ON clients(ts);
 PRAGMA journal_mode=WAL;
 ```
 
-If recon shows the router only exposes per-client cumulative byte counters (not rates), the collector computes per-client rates the same way it does for totals before insert. Either way the schema stays the same — `rx_rate` / `tx_rate` are always derived, never raw.
-
 Retention is unbounded for v1. Disk usage at 5s intervals: ~17.3k sample rows/day. Per-client rows depend on connected device count. Fine on any modern disk for at least a year. Pruning can be added later.
 
 ## Rate calculation
 
-For totals, in the collector:
+WAN ↓/↑ rates are **read directly** from the router (`get_lte_status().cur_rx_speed` / `cur_tx_speed`) — no delta math, no edge cases.
+
+Per-client `bandwidth` is derived from the per-MAC `totalBytes` counter returned by `DEV2_STAT_ENTRY`:
 
 ```
 dt = ts[t] - ts[t-1]
-rx_rate = (rx_total[t] - rx_total[t-1]) / dt
+bandwidth = (total_bytes[t] - total_bytes[t-1]) / dt
 ```
 
 Edge cases:
 
-- `rx_total[t] < rx_total[t-1]` (counter reset, e.g. router reboot) → store `rx_rate = NULL` for that tick. The chart breaks the line on NULLs.
-- `dt > 2 * POLL_INTERVAL` (missed ticks while we were offline / paused) → don't compute a rate; store `online=0` rows for the gap so the chart line breaks.
-- First tick after start → no previous sample, `rx_rate = NULL`.
-
-Same logic applies to per-client rates if we have to derive them.
+- `total_bytes[t] < total_bytes[t-1]` (counter reset, e.g. router reboot) → `bandwidth = NULL`.
+- `dt > 2 * POLL_INTERVAL` (missed ticks) → `bandwidth = NULL`; the WAN sample row gets `online=0`.
+- First tick for a given MAC → no previous sample → `bandwidth = NULL`.
+- Client disappeared between ticks → no row written for that MAC at this `ts`.
 
 ## HTTP API (Next.js)
 
@@ -144,7 +145,7 @@ Single page at `/`:
 
 - **Header strip** — big ↓ / ↑ rates (Mb/s, auto-scale to Kb/s for low rates), client count, online/offline pill.
 - **Chart** — dual-line (rx, tx) with range selector buttons: 1h · 24h · 7d. Recharts. Y axis auto-scales.
-- **Clients table** — `name · IP · MAC · ↓ · ↑`, sortable by any column. Shows current tick only (last `clients` rows).
+- **Clients table** — `name · IP · MAC · band (2.4G / 5G / wired) · ↕` (combined bandwidth), sortable by any column. Shows current tick only. Rationale: M8550 doesn't expose per-client RX/TX split; see [`docs/recon.md`](../../recon.md) §5.
 
 Browser polls `/api/current` every 5s. Chart re-fetches `/api/history` only on range change.
 
@@ -203,9 +204,9 @@ This decision is made during the recon phase, not pre-emptively.
 
 ## Implementation phases
 
-1. **Recon** — capture browser → `192.168.1.1` traffic, document login flow and the endpoint(s) for traffic totals + connected clients. Verify Docker container can reach `192.168.1.1`. Throwaway artefact: a recon notes file in `docs/`.
-2. **Router client** — try `tplinkrouterc6u` against the M8550. If it works, use it as a dependency. If not, hand-roll the auth + fetch in `router.py` from the recon notes.
-3. **Collector + SQLite** — `poller.py`, `store.py`, `__main__.py`. Schema migration on startup. Native run first, Dockerfile right after.
+1. **Recon** — done; see [`docs/recon.md`](../../recon.md). Library `tplinkrouterc6u` works (`username="user"`); WAN rates from `get_lte_status()`; per-client combined cumulative from `req_act("DEV2_STAT_ENTRY")`.
+2. **Router client** — wrap `tplinkrouterc6u`'s `TPLinkEXClient`. Use `get_status()` for the device list, `get_lte_status()` for WAN totals + rates, and one direct `req_act([ActItem(GL, "DEV2_STAT_ENTRY")])` call for per-MAC `totalBytes`.
+3. **Collector + SQLite** — `poller.py`, `store.py`, `rate.py` (per-client only), `__main__.py`. Schema migration on startup. Native run first, Dockerfile right after.
 4. **Next.js scaffold + API routes** — bootstrap with `pnpm create next-app`, add `better-sqlite3`, write `current` and `history` routes. Verify against a populated DB.
 5. **Dashboard UI** — `rate-card`, `traffic-chart`, `clients-table`. Wire polling. Range selector.
 6. **Compose + .env + README** — finalise `compose.yaml`, write `.env.example`, write the README run instructions.
@@ -215,9 +216,9 @@ Each phase ends in a working state. No phase depends on later-phase code.
 
 ## Testing
 
-- **Unit (Python)** — `poller` rate calc: deltas, counter resets, gaps, first tick. Pure functions, no I/O.
+- **Unit (Python)** — per-client `bandwidth` rate calc: deltas, counter resets, gaps, first-sample-for-MAC. Pure functions, no I/O.
 - **Unit (Python)** — `store` against in-memory SQLite (`:memory:`).
-- **Recorded fixtures (Python)** — captured HTTP responses from recon, replayed against `router.py` so CI doesn't need a live router.
+- **Unit (Python)** — `router` adapter mapping the library's `Status` / `LTEStatus` / `DEV2_STAT_ENTRY` payloads into our `RouterSnapshot` shape, with library calls mocked.
 - **Manual smoke (UI)** — populate `data/m8550.db` with synthetic samples, verify dashboard renders correctly with full / partial / empty data.
 
 No e2e or browser tests in v1. The UI is small enough that manual verification is faster than maintaining Playwright.
@@ -234,6 +235,4 @@ No e2e or browser tests in v1. The UI is small enough that manual verification i
 
 ## Open questions, deferred
 
-- Exact endpoint paths and auth flow on the M8550 — answered in phase 1 (recon), not now.
-- Whether `tplinkrouterc6u` works for this specific model — answered in phase 2.
-- Per-client byte data shape — answered in phase 1.
+(All Phase 0 questions answered in [`docs/recon.md`](../../recon.md).)
