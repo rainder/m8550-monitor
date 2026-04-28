@@ -6,7 +6,7 @@ class RateInputs:
     prev_ts: int | None
     prev_total: int | None
     ts: int
-    total: int
+    total: int | None
 
 
 def compute_rate(inputs: RateInputs, max_gap_seconds: int = 10) -> int | None:
@@ -18,7 +18,7 @@ def compute_rate(inputs: RateInputs, max_gap_seconds: int = 10) -> int | None:
     - dt exceeds max_gap_seconds (too long since last reading).
     - The counter went down (router/host reboot).
     """
-    if inputs.prev_ts is None or inputs.prev_total is None:
+    if inputs.prev_ts is None or inputs.prev_total is None or inputs.total is None:
         return None
     dt = inputs.ts - inputs.prev_ts
     if dt <= 0 or dt > max_gap_seconds:

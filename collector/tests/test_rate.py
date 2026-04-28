@@ -34,3 +34,8 @@ def test_compute_rate_truncates_to_int():
     r = compute_rate(RateInputs(prev_ts=100, prev_total=1000, ts=103, total=1500))
     # (500 / 3) = 166.66...
     assert r == 166
+
+
+def test_compute_rate_total_none_returns_none():
+    r = compute_rate(RateInputs(prev_ts=100, prev_total=1000, ts=110, total=None))
+    assert r is None

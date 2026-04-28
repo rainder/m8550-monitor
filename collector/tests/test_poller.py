@@ -131,6 +131,38 @@ def test_per_client_counter_reset_yields_null_bandwidth(tmp_path):
     assert row == (None,)
 
 
+def test_per_client_total_bytes_disappears_yields_null_bandwidth(tmp_path):
+    """Tick 1: client has total_bytes=500_000. Tick 2: same MAC, total_bytes=None.
+    Must NOT crash; bandwidth at tick 2 should be None."""
+    store = _store(tmp_path)
+    router = FakeRouter([
+        RouterSnapshot(
+            total_bytes=10, rx_rate=0, tx_rate=0,
+            clients=[RouterClientSnapshot(
+                mac="aa", name=None, ip=None,
+                conn_type="host_5g", total_bytes=500_000,
+            )],
+        ),
+        RouterSnapshot(
+            total_bytes=20, rx_rate=0, tx_rate=0,
+            clients=[RouterClientSnapshot(
+                mac="aa", name=None, ip=None,
+                conn_type="host_5g", total_bytes=None,
+            )],
+        ),
+    ])
+    clock = iter([100, 105])
+    p = Poller(router, store, now=lambda: next(clock))
+
+    p.tick()
+    p.tick()  # must not raise
+
+    import sqlite3
+    conn = sqlite3.connect(store.path)
+    row = conn.execute("SELECT bandwidth FROM clients WHERE ts = 105").fetchone()
+    assert row == (None,)
+
+
 def test_connection_error_writes_offline_row(tmp_path):
     store = _store(tmp_path)
     router = FakeRouter([ConnectionError("unreachable")])

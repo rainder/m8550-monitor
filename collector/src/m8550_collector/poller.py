@@ -73,7 +73,10 @@ class Poller:
         """Poll forever. Use a longer sleep when the router is unreachable."""
         backoff_interval = max(interval * 6, 30)
         while True:
-            self.tick()
+            try:
+                self.tick()
+            except Exception:
+                log.exception("tick failed")
             sample = self.store.latest_sample()
             sleep_for = interval if sample and sample["online"] else backoff_interval
             time.sleep(sleep_for)
