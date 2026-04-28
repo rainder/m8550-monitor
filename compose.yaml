@@ -16,6 +16,9 @@ services:
     image: m8550-web:dev
     ports:
       - "3000:3000"
+    # NOT :ro — SQLite WAL mode needs to write -shm/-wal sidecars into the
+    # data dir even for readers. Read-only is enforced at the application
+    # layer in web/lib/db.ts (`new Database(path, { readonly: true })`).
     volumes:
       - ./data:/data
     environment:

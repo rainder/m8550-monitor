@@ -7,8 +7,7 @@ RUN apk add --no-cache python3 make g++ sqlite-dev
 
 RUN corepack enable
 
-# pnpm 10 needs the workspace file present for onlyBuiltDependencies to apply.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml ./
 
 RUN pnpm install --frozen-lockfile
 
