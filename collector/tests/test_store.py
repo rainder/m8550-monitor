@@ -170,3 +170,38 @@ def test_latest_sample_marks_offline_correctly(tmp_path):
     s.append_sample(1, total_bytes=None, rx_rate=None, tx_rate=None, online=False)
     latest = s.latest_sample()
     assert latest is not None and latest["online"] is False
+
+
+def test_last_client_totals_returns_most_recent_per_mac(tmp_path):
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+
+    s.append_clients(
+        ts=10,
+        clients=[
+            {"mac": "aa", "name": "n", "ip": "i", "conn_type": "host_2g",
+             "total_bytes": 100, "bandwidth": None},
+            {"mac": "bb", "name": "n", "ip": "i", "conn_type": "host_5g",
+             "total_bytes": 200, "bandwidth": None},
+        ],
+    )
+    s.append_clients(
+        ts=20,
+        clients=[
+            {"mac": "aa", "name": "n", "ip": "i", "conn_type": "host_2g",
+             "total_bytes": 500, "bandwidth": 40},
+        ],
+    )
+
+    assert s.last_client_totals() == {
+        "aa": (20, 500),
+        "bb": (10, 200),
+    }
+
+
+def test_last_client_totals_empty_when_no_clients(tmp_path):
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+    assert s.last_client_totals() == {}

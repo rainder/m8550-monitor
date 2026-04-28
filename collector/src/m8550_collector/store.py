@@ -84,6 +84,17 @@ class Store:
                 ],
             )
 
+    def last_client_totals(self) -> dict[str, tuple[int, int]]:
+        """Latest (ts, total_bytes) per MAC. Used by the poller for delta calc."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT mac, ts, total_bytes FROM clients "
+                "WHERE (mac, ts) IN ("
+                "   SELECT mac, MAX(ts) FROM clients GROUP BY mac"
+                ")"
+            ).fetchall()
+            return {mac: (ts, total) for mac, ts, total in rows}
+
     def latest_sample(self) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
