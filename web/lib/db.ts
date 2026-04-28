@@ -18,12 +18,22 @@ interface SampleRow {
   rx_rate: number | null
   tx_rate: number | null
   online: number
+  total_bytes: number | null
+  sig_level: number | null
+  rsrp: number | null
+  rsrq: number | null
+  snr: number | null
+  isp_name: string | null
+  cpu_pct: number | null
+  mem_pct: number | null
 }
 
 export function latestSample(): Sample | null {
   const row = getDb()
     .prepare(
-      "SELECT ts, rx_rate, tx_rate, online FROM samples ORDER BY ts DESC LIMIT 1",
+      "SELECT ts, rx_rate, tx_rate, online, " +
+      "total_bytes, sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct " +
+      "FROM samples ORDER BY ts DESC LIMIT 1",
     )
     .get() as SampleRow | undefined
   if (!row) return null
@@ -32,6 +42,14 @@ export function latestSample(): Sample | null {
     rxRate: row.rx_rate,
     txRate: row.tx_rate,
     online: row.online === 1,
+    totalBytes: row.total_bytes,
+    sigLevel: row.sig_level,
+    rsrp: row.rsrp,
+    rsrq: row.rsrq,
+    snr: row.snr,
+    ispName: row.isp_name,
+    cpuPct: row.cpu_pct,
+    memPct: row.mem_pct,
   }
 }
 

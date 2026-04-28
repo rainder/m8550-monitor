@@ -3,6 +3,14 @@ export interface Sample {
   rxRate: number | null
   txRate: number | null
   online: boolean
+  totalBytes: number | null   // NEW (column existed in DB; now exposed)
+  sigLevel: number | null     // NEW (0..5 bars)
+  rsrp: number | null         // NEW (dBm, typically negative)
+  rsrq: number | null         // NEW (dB, typically negative)
+  snr: number | null          // NEW (dB)
+  ispName: string | null      // NEW (e.g. "Bite")
+  cpuPct: number | null       // NEW (0..1)
+  memPct: number | null       // NEW (0..1)
 }
 
 export interface Client {
