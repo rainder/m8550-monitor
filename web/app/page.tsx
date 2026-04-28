@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react"
 
 import { ClientsTable } from "@/components/clients-table"
+import { SignalPanel } from "@/components/signal-panel"
 import { StatCard } from "@/components/stat-card"
 import { StatusIndicator } from "@/components/status-indicator"
+import { SystemGauges } from "@/components/system-gauges"
 import { TrafficChart } from "@/components/traffic-chart"
-import { formatRelative } from "@/lib/format"
+import { formatBytes, formatRelative } from "@/lib/format"
 import type { CurrentResponse, HistoryRange, HistoryResponse } from "@/lib/types"
 
 const POLL_MS = 5000
@@ -63,11 +65,22 @@ export default function Page() {
           online={online}
           ageSeconds={ageSeconds}
           clientCount={clientCount}
+          cpuPct={sample?.cpuPct ?? null}
+          memPct={sample?.memPct ?? null}
         />
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <StatCard label="Download" rate={sample?.rxRate ?? null} sparkValues={sparkRx} accent="down" />
           <StatCard label="Upload"   rate={sample?.txRate ?? null} sparkValues={sparkTx} accent="up" />
+          <SignalPanel sample={sample ?? null} />
+        </div>
+
+        <div className="flex items-center justify-end gap-2 text-[11px] font-mono text-zinc-500">
+          <span className="uppercase tracking-wider">Total</span>
+          <span className="text-zinc-300 tabular-nums">
+            {formatBytes(sample?.totalBytes ?? null)}
+          </span>
+          <span>used</span>
         </div>
 
         <TrafficChart
@@ -85,8 +98,14 @@ export default function Page() {
 }
 
 function Header({
-  online, ageSeconds, clientCount,
-}: { online: boolean; ageSeconds: number; clientCount: number }) {
+  online, ageSeconds, clientCount, cpuPct, memPct,
+}: {
+  online: boolean
+  ageSeconds: number
+  clientCount: number
+  cpuPct: number | null
+  memPct: number | null
+}) {
   return (
     <header className="flex items-center justify-between border-b border-[var(--color-border)] pb-5">
       <div className="flex items-baseline gap-3">
@@ -105,6 +124,7 @@ function Header({
       </div>
 
       <div className="flex items-center gap-5">
+        <SystemGauges cpuPct={cpuPct} memPct={memPct} />
         <Metric label="Clients" value={String(clientCount)} />
         <Metric label="Updated" value={formatRelative(ageSeconds)} />
         <StatusIndicator online={online} ageSeconds={ageSeconds} />
