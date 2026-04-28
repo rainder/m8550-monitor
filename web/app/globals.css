@@ -1,26 +1,57 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Vercel-flavoured neutral ramp. Pure black background, true grayscale. */
+  --color-bg: #000;
+  --color-surface: #0a0a0a;
+  --color-surface-2: #111;
+  --color-border: #1f1f22;
+  --color-border-strong: #2a2a2d;
+  --color-text: #fafafa;
+  --color-text-mute: #a1a1aa;
+  --color-text-faint: #52525b;
+
+  --color-accent-down: #4ade80;   /* bright green for download */
+  --color-accent-up: #60a5fa;     /* bright blue for upload */
+  --color-accent-warn: #fbbf24;
+  --color-accent-bad: #f87171;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html, body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-feature-settings: "ss01", "cv11", "cv05";
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Animated pulse for the live indicator. */
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0   rgba(74, 222, 128, 0.6); }
+  70%  { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0);   }
+  100% { box-shadow: 0 0 0 0   rgba(74, 222, 128, 0);   }
+}
+
+.dot-pulse {
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Subtle grain so the black surfaces don't feel flat. */
+.grain::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.018;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  background-size: 200px 200px;
+  mix-blend-mode: overlay;
+}
+
+/* Scrollbar polish on dark backgrounds. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
 }
