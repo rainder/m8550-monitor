@@ -1,0 +1,7 @@
+node_modules
+.next
+.git
+tests
+*.test.ts
+*.test.tsx
+.DS_Store
