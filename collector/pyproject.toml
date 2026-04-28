@@ -5,6 +5,7 @@ description = "TP-Link M8550 stats collector"
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.32",
+    "tplinkrouterc6u>=5.18",
 ]
 
 [project.optional-dependencies]
