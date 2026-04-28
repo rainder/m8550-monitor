@@ -3,8 +3,14 @@ import sqlite3
 import pytest
 
 from m8550_collector.poller import Poller
-from m8550_collector.router import RouterSnapshot, RouterClientSnapshot
+from m8550_collector.router import RouterSnapshot, RouterClientSnapshot, WanStatus
 from m8550_collector.store import Store
+
+
+def _wan_idle() -> WanStatus:
+    """A WanStatus with all-None fields, for tests that don't care."""
+    return WanStatus(sig_level=None, rsrp=None, rsrq=None, snr=None,
+                     isp_name=None, cpu_pct=None, mem_pct=None)
 
 
 class FakeRouter:
@@ -29,7 +35,8 @@ def _store(tmp_path):
 def test_first_tick_writes_wan_rates_directly(tmp_path):
     store = _store(tmp_path)
     router = FakeRouter([
-        RouterSnapshot(total_bytes=10_000, rx_rate=2_000_000, tx_rate=80_000, clients=[]),
+        RouterSnapshot(total_bytes=10_000, rx_rate=2_000_000, tx_rate=80_000,
+                       wan_status=_wan_idle(), clients=[]),
     ])
     p = Poller(router, store, now=lambda: 100)
 
@@ -48,6 +55,7 @@ def test_first_client_tick_has_null_bandwidth(tmp_path):
     router = FakeRouter([
         RouterSnapshot(
             total_bytes=10_000, rx_rate=100, tx_rate=50,
+            wan_status=_wan_idle(),
             clients=[
                 RouterClientSnapshot(
                     mac="aa", name="phone", ip="1.1.1.1",
@@ -72,6 +80,7 @@ def test_second_tick_computes_per_client_bandwidth(tmp_path):
     router = FakeRouter([
         RouterSnapshot(
             total_bytes=10_000, rx_rate=100, tx_rate=50,
+            wan_status=_wan_idle(),
             clients=[
                 RouterClientSnapshot(
                     mac="aa", name="phone", ip="1.1.1.1",
@@ -81,6 +90,7 @@ def test_second_tick_computes_per_client_bandwidth(tmp_path):
         ),
         RouterSnapshot(
             total_bytes=11_000, rx_rate=200, tx_rate=80,
+            wan_status=_wan_idle(),
             clients=[
                 RouterClientSnapshot(
                     mac="aa", name="phone", ip="1.1.1.1",
@@ -111,11 +121,13 @@ def test_per_client_counter_reset_yields_null_bandwidth(tmp_path):
     router = FakeRouter([
         RouterSnapshot(
             total_bytes=10, rx_rate=0, tx_rate=0,
+            wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
                                           conn_type="wired", total_bytes=500)],
         ),
         RouterSnapshot(
             total_bytes=20, rx_rate=0, tx_rate=0,
+            wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
                                           conn_type="wired", total_bytes=10)],
         ),
@@ -138,6 +150,7 @@ def test_per_client_total_bytes_disappears_yields_null_bandwidth(tmp_path):
     router = FakeRouter([
         RouterSnapshot(
             total_bytes=10, rx_rate=0, tx_rate=0,
+            wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(
                 mac="aa", name=None, ip=None,
                 conn_type="host_5g", total_bytes=500_000,
@@ -145,6 +158,7 @@ def test_per_client_total_bytes_disappears_yields_null_bandwidth(tmp_path):
         ),
         RouterSnapshot(
             total_bytes=20, rx_rate=0, tx_rate=0,
+            wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(
                 mac="aa", name=None, ip=None,
                 conn_type="host_5g", total_bytes=None,
@@ -179,3 +193,23 @@ def test_connection_error_writes_offline_row(tmp_path):
     conn = sqlite3.connect(store.path)
     count = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
     assert count == 0  # no clients written when router unreachable
+
+
+def test_poller_persists_wan_status(tmp_path):
+    store = _store(tmp_path)
+    router = FakeRouter([
+        RouterSnapshot(
+            total_bytes=10_000, rx_rate=100, tx_rate=50,
+            wan_status=WanStatus(sig_level=4, rsrp=-82, rsrq=-10, snr=14,
+                                  isp_name="Bite", cpu_pct=0.59, mem_pct=0.52),
+            clients=[],
+        ),
+    ])
+    p = Poller(router, store, now=lambda: 100)
+    p.tick()
+
+    conn = sqlite3.connect(store.path)
+    row = conn.execute(
+        "SELECT sig_level, rsrp, isp_name, cpu_pct FROM samples"
+    ).fetchone()
+    assert row == (4, -82, "Bite", 0.59)

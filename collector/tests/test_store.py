@@ -18,7 +18,10 @@ def test_init_creates_schema(tmp_path):
     sample_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(samples)")
     }
-    assert sample_cols == {"ts", "total_bytes", "rx_rate", "tx_rate", "online"}
+    assert sample_cols == {
+        "ts", "total_bytes", "rx_rate", "tx_rate", "online",
+        "sig_level", "rsrp", "rsrq", "snr", "isp_name", "cpu_pct", "mem_pct",
+    }
 
     client_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(clients)")
@@ -205,3 +208,41 @@ def test_last_client_totals_empty_when_no_clients(tmp_path):
     s = Store(str(db))
     s.init_schema()
     assert s.last_client_totals() == {}
+
+
+def test_append_sample_persists_wan_status(tmp_path):
+    from m8550_collector.router import WanStatus
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+
+    s.append_sample(
+        ts=1,
+        total_bytes=1000,
+        rx_rate=10,
+        tx_rate=5,
+        online=True,
+        wan_status=WanStatus(
+            sig_level=4, rsrp=-82, rsrq=-10, snr=14,
+            isp_name="Bite", cpu_pct=0.59, mem_pct=0.52,
+        ),
+    )
+
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct FROM samples"
+    ).fetchone()
+    assert row == (4, -82, -10, 14, "Bite", 0.59, 0.52)
+
+
+def test_append_sample_offline_keeps_wan_status_null(tmp_path):
+    db = tmp_path / "t.db"
+    s = Store(str(db))
+    s.init_schema()
+    s.append_sample(ts=1, total_bytes=None, rx_rate=None,
+                    tx_rate=None, online=False)
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT sig_level, rsrp, isp_name, cpu_pct, mem_pct FROM samples"
+    ).fetchone()
+    assert row == (None, None, None, None, None)

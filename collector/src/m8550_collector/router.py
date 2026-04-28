@@ -13,11 +13,24 @@ class RouterClientSnapshot:
 
 
 @dataclass(frozen=True)
+class WanStatus:
+    """Signal, ISP, and system-resource fields from get_lte_status / get_status."""
+    sig_level: int | None
+    rsrp: int | None
+    rsrq: int | None
+    snr: int | None
+    isp_name: str | None
+    cpu_pct: float | None
+    mem_pct: float | None
+
+
+@dataclass(frozen=True)
 class RouterSnapshot:
     """One whole-router reading. All values may be None when offline."""
     total_bytes: int | None    # WAN cumulative combined (total_statistics)
     rx_rate: int | None        # WAN bytes/sec down (cur_rx_speed)
     tx_rate: int | None        # WAN bytes/sec up (cur_tx_speed)
+    wan_status: WanStatus
     clients: list[RouterClientSnapshot]
 
 
@@ -42,6 +55,20 @@ log = logging.getLogger(__name__)
 def _normalise_mac(mac: str) -> str:
     """Upper-case, colon-separated."""
     return mac.upper().replace("-", ":")
+
+
+def _safe_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class LibRouterClient:
@@ -86,10 +113,21 @@ class LibRouterClient:
                 )
             )
 
+        wan_status = WanStatus(
+            sig_level=_safe_int(getattr(lte, "sig_level", None)),
+            rsrp=_safe_int(getattr(lte, "rsrp", None)),
+            rsrq=_safe_int(getattr(lte, "rsrq", None)),
+            snr=_safe_int(getattr(lte, "snr", None)),
+            isp_name=getattr(lte, "isp_name", None) or None,
+            cpu_pct=_safe_float(getattr(status, "cpu_usage", None)),
+            mem_pct=_safe_float(getattr(status, "mem_usage", None)),
+        )
+
         return RouterSnapshot(
             total_bytes=int(lte.total_statistics) if lte.total_statistics is not None else None,
             rx_rate=int(lte.cur_rx_speed) if lte.cur_rx_speed is not None else None,
             tx_rate=int(lte.cur_tx_speed) if lte.cur_tx_speed is not None else None,
+            wan_status=wan_status,
             clients=clients,
         )
 

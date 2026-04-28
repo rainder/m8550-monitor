@@ -9,7 +9,14 @@ CREATE TABLE IF NOT EXISTS samples (
     total_bytes   INTEGER,
     rx_rate       INTEGER,
     tx_rate       INTEGER,
-    online        INTEGER NOT NULL
+    online        INTEGER NOT NULL,
+    sig_level     INTEGER,
+    rsrp          INTEGER,
+    rsrq          INTEGER,
+    snr           INTEGER,
+    isp_name      TEXT,
+    cpu_pct       REAL,
+    mem_pct       REAL
 );
 
 CREATE TABLE IF NOT EXISTS clients (
@@ -53,13 +60,23 @@ class Store:
         rx_rate: int | None,
         tx_rate: int | None,
         online: bool,
+        wan_status=None,   # WanStatus | None — typed loosely to avoid circular imports
     ) -> None:
+        sig_level = wan_status.sig_level if wan_status else None
+        rsrp      = wan_status.rsrp      if wan_status else None
+        rsrq      = wan_status.rsrq      if wan_status else None
+        snr       = wan_status.snr       if wan_status else None
+        isp_name  = wan_status.isp_name  if wan_status else None
+        cpu_pct   = wan_status.cpu_pct   if wan_status else None
+        mem_pct   = wan_status.mem_pct   if wan_status else None
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO samples "
-                "(ts, total_bytes, rx_rate, tx_rate, online) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (ts, total_bytes, rx_rate, tx_rate, int(online)),
+                "(ts, total_bytes, rx_rate, tx_rate, online, "
+                "sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, total_bytes, rx_rate, tx_rate, int(online),
+                 sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct),
             )
 
     def append_clients(self, ts: int, clients: list[dict]) -> None:

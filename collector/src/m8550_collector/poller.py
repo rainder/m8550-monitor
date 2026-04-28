@@ -42,6 +42,7 @@ class Poller:
             rx_rate=snap.rx_rate,
             tx_rate=snap.tx_rate,
             online=True,
+            wan_status=snap.wan_status,
         )
 
         # Per-client bandwidth: derive from cumulative deltas.

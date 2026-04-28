@@ -7,6 +7,7 @@ from m8550_collector.router import (
     LibRouterClient,
     RouterClientSnapshot,
     RouterSnapshot,
+    WanStatus,
 )
 
 
@@ -32,6 +33,11 @@ def test_snapshot_combines_lte_status_status_and_dev2_stat(monkeypatch):
     lte.total_statistics = 613_000_000_000
     lte.cur_rx_speed = 2_000_000
     lte.cur_tx_speed = 80_000
+    lte.sig_level = 4
+    lte.rsrp = -82
+    lte.rsrq = -10
+    lte.snr = 14
+    lte.isp_name = "Bite"
     fake_lib.get_lte_status.return_value = lte
 
     status = MagicMock()
@@ -39,6 +45,8 @@ def test_snapshot_combines_lte_status_status_and_dev2_stat(monkeypatch):
         _device("AA-BB-CC-DD-EE-01", "Phone", "192.168.1.10", "host_5g"),
         _device("AA-BB-CC-DD-EE-02", "Laptop",  "192.168.1.11", "host_5g"),
     ]
+    status.cpu_usage = 0.59
+    status.mem_usage = 0.52
     fake_lib.get_status.return_value = status
 
     fake_lib.ActItem = MagicMock()
@@ -75,10 +83,17 @@ def test_snapshot_handles_missing_stat_entry_for_known_device():
     lte.total_statistics = 1
     lte.cur_rx_speed = 0
     lte.cur_tx_speed = 0
+    lte.sig_level = 4
+    lte.rsrp = -82
+    lte.rsrq = -10
+    lte.snr = 14
+    lte.isp_name = "Bite"
     fake_lib.get_lte_status.return_value = lte
 
     status = MagicMock()
     status.devices = [_device("AA-BB-CC-DD-EE-FF", "ghost", "1.2.3.4", "host_2g")]
+    status.cpu_usage = 0.59
+    status.mem_usage = 0.52
     fake_lib.get_status.return_value = status
 
     fake_lib.ActItem = MagicMock()
@@ -100,6 +115,11 @@ def test_snapshot_drops_inactive_devices():
     lte.total_statistics = 1
     lte.cur_rx_speed = 0
     lte.cur_tx_speed = 0
+    lte.sig_level = 4
+    lte.rsrp = -82
+    lte.rsrq = -10
+    lte.snr = 14
+    lte.isp_name = "Bite"
     fake_lib.get_lte_status.return_value = lte
 
     active = _device("AA-BB-CC-DD-EE-01", "live", "1.1.1.1", "host_5g")
@@ -107,6 +127,8 @@ def test_snapshot_drops_inactive_devices():
     inactive.active = False
     status = MagicMock()
     status.devices = [active, inactive]
+    status.cpu_usage = 0.59
+    status.mem_usage = 0.52
     fake_lib.get_status.return_value = status
 
     fake_lib.ActItem = MagicMock()
@@ -150,8 +172,15 @@ def test_snapshot_reauths_and_retries_on_first_failure():
     lte.total_statistics = 100
     lte.cur_rx_speed = 50
     lte.cur_tx_speed = 25
+    lte.sig_level = 4
+    lte.rsrp = -82
+    lte.rsrq = -10
+    lte.snr = 14
+    lte.isp_name = "Bite"
     status = MagicMock()
     status.devices = []
+    status.cpu_usage = 0.59
+    status.mem_usage = 0.52
 
     # First call to get_lte_status raises (simulating a dropped session).
     # After authorize(), the next call returns successfully.
@@ -184,3 +213,36 @@ def test_snapshot_raises_when_reauth_retry_also_fails():
         client.snapshot()
     # authorize was attempted once, but the retry also failed.
     fake_lib.authorize.assert_called_once()
+
+
+def test_snapshot_carries_wan_status():
+    fake_lib = MagicMock()
+    lte = MagicMock()
+    lte.total_statistics = 1
+    lte.cur_rx_speed = 0
+    lte.cur_tx_speed = 0
+    lte.sig_level = 4
+    lte.rsrp = -82
+    lte.rsrq = -10
+    lte.snr = 14
+    lte.isp_name = "Bite"
+    fake_lib.get_lte_status.return_value = lte
+
+    status = MagicMock()
+    status.devices = []
+    status.cpu_usage = 0.59
+    status.mem_usage = 0.52
+    fake_lib.get_status.return_value = status
+
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.return_value = ("raw", [[]])
+
+    client = LibRouterClient(_lib=fake_lib)
+    snap = client.snapshot()
+
+    assert snap.wan_status.sig_level == 4
+    assert snap.wan_status.rsrp == -82
+    assert snap.wan_status.isp_name == "Bite"
+    assert snap.wan_status.cpu_pct == 0.59
+    assert snap.wan_status.mem_pct == 0.52
