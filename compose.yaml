@@ -1,0 +1,25 @@
+services:
+  collector:
+    build: ./collector
+    image: m8550-collector:dev
+    volumes:
+      - ./data:/data
+    environment:
+      - M8550_HOST=${M8550_HOST:-http://192.168.1.1}
+      - M8550_PASSWORD=${M8550_PASSWORD}
+      - DB_PATH=/data/m8550.db
+      - POLL_INTERVAL=${POLL_INTERVAL:-5}
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    image: m8550-web:dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_PATH=/data/m8550.db
+    restart: unless-stopped
+    depends_on:
+      - collector
