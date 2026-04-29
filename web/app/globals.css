@@ -26,6 +26,14 @@ html, body {
   font-feature-settings: "ss01", "cv11", "cv05";
 }
 
+/* Respect notch / status-bar / home-indicator on iOS standalone PWA. */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
 /* Animated pulse for the live indicator. */
 @keyframes pulse-ring {
   0%   { box-shadow: 0 0 0 0   rgba(74, 222, 128, 0.6); }
