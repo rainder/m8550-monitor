@@ -3,14 +3,21 @@ export interface Sample {
   rxRate: number | null
   txRate: number | null
   online: boolean
-  totalBytes: number | null   // NEW (column existed in DB; now exposed)
-  sigLevel: number | null     // NEW (0..5 bars)
-  rsrp: number | null         // NEW (dBm, typically negative)
-  rsrq: number | null         // NEW (dB, typically negative)
-  snr: number | null          // NEW (dB)
-  ispName: string | null      // NEW (e.g. "Bite")
-  cpuPct: number | null       // NEW (0..1)
-  memPct: number | null       // NEW (0..1)
+  totalBytes: number | null
+  // Signal — usually all 0 on this firmware (M8550 local CGI doesn't report).
+  sigLevel: number | null
+  rsrp: number | null
+  rsrq: number | null
+  snr: number | null
+  ispName: string | null
+  cpuPct: number | null         // 0..1
+  memPct: number | null         // 0..1
+  // Link config (these DO populate on M8550):
+  connectedBand: string | null  // e.g. "B3;N40"
+  endcStatus: number | null     // 1 = EN-DC active (5G NSA), 0 = LTE only
+  networkType: number | null    // firmware-specific code (8 = 5G NSA)
+  wanIpv4: string | null
+  wanIpv6: string | null
 }
 
 export interface Client {

@@ -14,7 +14,13 @@ class RouterClientSnapshot:
 
 @dataclass(frozen=True)
 class WanStatus:
-    """Signal, ISP, and system-resource fields from get_lte_status / get_status."""
+    """Signal, ISP, link, and system-resource fields from the router.
+
+    The M8550 firmware reports `0` for sig_level / rsrp / rsrq / snr even
+    when on a healthy 5G connection — the local CGI doesn't compute
+    them. Real link information lives in `connected_band` /
+    `endc_status` / `network_type` (from DEV2_LTE_LINK_CFG) instead.
+    """
     sig_level: int | None
     rsrp: int | None
     rsrq: int | None
@@ -22,6 +28,11 @@ class WanStatus:
     isp_name: str | None
     cpu_pct: float | None
     mem_pct: float | None
+    connected_band: str | None       # e.g. "B3;N40" (LTE B3 + NR N40)
+    endc_status: int | None          # 1 = EN-DC active (5G NSA), 0 = LTE only
+    network_type: int | None         # firmware-specific code (8 = 5G NSA on M8550)
+    wan_ipv4: str | None
+    wan_ipv6: str | None
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,7 @@ class LibRouterClient:
                 )
             )
 
+        link_cfg = self._fetch_link_cfg()
         wan_status = WanStatus(
             sig_level=_safe_int(getattr(lte, "sig_level", None)),
             rsrp=_safe_int(getattr(lte, "rsrp", None)),
@@ -121,6 +133,11 @@ class LibRouterClient:
             isp_name=getattr(lte, "isp_name", None) or None,
             cpu_pct=_safe_float(getattr(status, "cpu_usage", None)),
             mem_pct=_safe_float(getattr(status, "mem_usage", None)),
+            connected_band=link_cfg.get("connectedBand") or None,
+            endc_status=_safe_int(link_cfg.get("endcStatus")),
+            network_type=_safe_int(link_cfg.get("networkType")),
+            wan_ipv4=link_cfg.get("ipv4") or None,
+            wan_ipv6=link_cfg.get("ipv6") or None,
         )
 
         return RouterSnapshot(
@@ -136,6 +153,24 @@ class LibRouterClient:
         status = self._lib.get_status()
         stat_rows = self._fetch_stat_rows()
         return lte, status, stat_rows
+
+    def _fetch_link_cfg(self) -> dict:
+        """DEV2_LTE_LINK_CFG carries the band / EN-DC / WAN IP info the
+        higher-level get_lte_status() call drops."""
+        acts = [self._lib.ActItem(
+            self._lib.ActItem.GET, "DEV2_LTE_LINK_CFG", "1,0,0,0,0,0",
+        )]
+        try:
+            _, values = self._lib.req_act(acts)
+        except Exception:
+            return {}
+        if not values:
+            return {}
+        v = values[0]
+        # The CGI returns either a dict (single entry) or [dict] (list of one).
+        if isinstance(v, list):
+            v = v[0] if v else {}
+        return v if isinstance(v, dict) else {}
 
     def _fetch_stat_rows(self) -> dict[str, int]:
         """Map MAC → cumulative total_bytes, from DEV2_STAT_ENTRY."""

@@ -10,7 +10,9 @@ from m8550_collector.store import Store
 def _wan_idle() -> WanStatus:
     """A WanStatus with all-None fields, for tests that don't care."""
     return WanStatus(sig_level=None, rsrp=None, rsrq=None, snr=None,
-                     isp_name=None, cpu_pct=None, mem_pct=None)
+                     isp_name=None, cpu_pct=None, mem_pct=None,
+                     connected_band=None, endc_status=None, network_type=None,
+                     wan_ipv4=None, wan_ipv6=None)
 
 
 class FakeRouter:
@@ -201,7 +203,10 @@ def test_poller_persists_wan_status(tmp_path):
         RouterSnapshot(
             total_bytes=10_000, rx_rate=100, tx_rate=50,
             wan_status=WanStatus(sig_level=4, rsrp=-82, rsrq=-10, snr=14,
-                                  isp_name="Bite", cpu_pct=0.59, mem_pct=0.52),
+                                  isp_name="Bite", cpu_pct=0.59, mem_pct=0.52,
+                                  connected_band="B3;N40", endc_status=1,
+                                  network_type=8, wan_ipv4="10.0.0.1",
+                                  wan_ipv6=None),
             clients=[],
         ),
     ])

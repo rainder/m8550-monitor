@@ -5,18 +5,23 @@ from pathlib import Path
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
-    ts            INTEGER PRIMARY KEY,
-    total_bytes   INTEGER,
-    rx_rate       INTEGER,
-    tx_rate       INTEGER,
-    online        INTEGER NOT NULL,
-    sig_level     INTEGER,
-    rsrp          INTEGER,
-    rsrq          INTEGER,
-    snr           INTEGER,
-    isp_name      TEXT,
-    cpu_pct       REAL,
-    mem_pct       REAL
+    ts              INTEGER PRIMARY KEY,
+    total_bytes     INTEGER,
+    rx_rate         INTEGER,
+    tx_rate         INTEGER,
+    online          INTEGER NOT NULL,
+    sig_level       INTEGER,
+    rsrp            INTEGER,
+    rsrq            INTEGER,
+    snr             INTEGER,
+    isp_name        TEXT,
+    cpu_pct         REAL,
+    mem_pct         REAL,
+    connected_band  TEXT,
+    endc_status     INTEGER,
+    network_type    INTEGER,
+    wan_ipv4        TEXT,
+    wan_ipv6        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clients (
@@ -62,21 +67,29 @@ class Store:
         online: bool,
         wan_status=None,   # WanStatus | None — typed loosely to avoid circular imports
     ) -> None:
-        sig_level = wan_status.sig_level if wan_status else None
-        rsrp      = wan_status.rsrp      if wan_status else None
-        rsrq      = wan_status.rsrq      if wan_status else None
-        snr       = wan_status.snr       if wan_status else None
-        isp_name  = wan_status.isp_name  if wan_status else None
-        cpu_pct   = wan_status.cpu_pct   if wan_status else None
-        mem_pct   = wan_status.mem_pct   if wan_status else None
+        w = wan_status
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO samples "
-                "(ts, total_bytes, rx_rate, tx_rate, online, "
-                "sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (ts, total_bytes, rx_rate, tx_rate, int(online),
-                 sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct),
+                "INSERT OR REPLACE INTO samples ("
+                "ts, total_bytes, rx_rate, tx_rate, online, "
+                "sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct, "
+                "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts, total_bytes, rx_rate, tx_rate, int(online),
+                    w.sig_level if w else None,
+                    w.rsrp      if w else None,
+                    w.rsrq      if w else None,
+                    w.snr       if w else None,
+                    w.isp_name  if w else None,
+                    w.cpu_pct   if w else None,
+                    w.mem_pct   if w else None,
+                    w.connected_band if w else None,
+                    w.endc_status    if w else None,
+                    w.network_type   if w else None,
+                    w.wan_ipv4       if w else None,
+                    w.wan_ipv6       if w else None,
+                ),
             )
 
     def append_clients(self, ts: int, clients: list[dict]) -> None:

@@ -21,6 +21,7 @@ def test_init_creates_schema(tmp_path):
     assert sample_cols == {
         "ts", "total_bytes", "rx_rate", "tx_rate", "online",
         "sig_level", "rsrp", "rsrq", "snr", "isp_name", "cpu_pct", "mem_pct",
+        "connected_band", "endc_status", "network_type", "wan_ipv4", "wan_ipv6",
     }
 
     client_cols = {
@@ -225,14 +226,20 @@ def test_append_sample_persists_wan_status(tmp_path):
         wan_status=WanStatus(
             sig_level=4, rsrp=-82, rsrq=-10, snr=14,
             isp_name="Bite", cpu_pct=0.59, mem_pct=0.52,
+            connected_band="B3;N40", endc_status=1, network_type=8,
+            wan_ipv4="100.64.1.1", wan_ipv6="2001:db8::1",
         ),
     )
 
     conn = sqlite3.connect(db)
     row = conn.execute(
-        "SELECT sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct FROM samples"
+        "SELECT sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct, "
+        "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6 FROM samples"
     ).fetchone()
-    assert row == (4, -82, -10, 14, "Bite", 0.59, 0.52)
+    assert row == (
+        4, -82, -10, 14, "Bite", 0.59, 0.52,
+        "B3;N40", 1, 8, "100.64.1.1", "2001:db8::1",
+    )
 
 
 def test_append_sample_offline_keeps_wan_status_null(tmp_path):

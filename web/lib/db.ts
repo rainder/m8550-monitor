@@ -26,13 +26,19 @@ interface SampleRow {
   isp_name: string | null
   cpu_pct: number | null
   mem_pct: number | null
+  connected_band: string | null
+  endc_status: number | null
+  network_type: number | null
+  wan_ipv4: string | null
+  wan_ipv6: string | null
 }
 
 export function latestSample(): Sample | null {
   const row = getDb()
     .prepare(
       "SELECT ts, rx_rate, tx_rate, online, " +
-      "total_bytes, sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct " +
+      "total_bytes, sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct, " +
+      "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6 " +
       "FROM samples ORDER BY ts DESC LIMIT 1",
     )
     .get() as SampleRow | undefined
@@ -50,6 +56,11 @@ export function latestSample(): Sample | null {
     ispName: row.isp_name,
     cpuPct: row.cpu_pct,
     memPct: row.mem_pct,
+    connectedBand: row.connected_band,
+    endcStatus: row.endc_status,
+    networkType: row.network_type,
+    wanIpv4: row.wan_ipv4,
+    wanIpv6: row.wan_ipv6,
   }
 }
 
