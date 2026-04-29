@@ -119,3 +119,19 @@ export function samplesSince(sinceTs: number): HistoryPoint[] {
     .all(sinceTs) as HistoryRow[]
   return rows.map((r) => ({ ts: r.ts, rxRate: r.rx_rate, txRate: r.tx_rate }))
 }
+
+interface ClientHistoryRow {
+  ts: number
+  mac: string
+  name: string | null
+  bandwidth: number | null
+}
+
+export function clientHistorySince(sinceTs: number): ClientHistoryRow[] {
+  return getDb()
+    .prepare(
+      "SELECT ts, mac, name, bandwidth FROM clients " +
+      "WHERE ts >= ? ORDER BY ts ASC, mac ASC",
+    )
+    .all(sinceTs) as ClientHistoryRow[]
+}

@@ -54,3 +54,24 @@ export interface HistoryResponse {
   range: HistoryRange
   points: HistoryPoint[]
 }
+
+export type HistoryMode = "wan" | "clients"
+
+export interface ClientSeries {
+  mac: string
+  name: string | null
+  /** bandwidth at each tick, aligned to ClientHistoryResponse.ticks. null when no data */
+  values: (number | null)[]
+}
+
+export interface ClientHistoryResponse {
+  range: HistoryRange
+  mode: "clients"
+  ticks: number[]
+  series: ClientSeries[]
+}
+
+/** Discriminated union — `mode` is the discriminator. */
+export type HistoryResponseAny =
+  | (HistoryResponse & { mode?: "wan" })
+  | ClientHistoryResponse

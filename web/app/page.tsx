@@ -9,7 +9,7 @@ import { StatusIndicator } from "@/components/status-indicator"
 import { SystemGauges } from "@/components/system-gauges"
 import { TrafficChart } from "@/components/traffic-chart"
 import { formatBytes, formatRelative } from "@/lib/format"
-import type { CurrentResponse, HistoryRange, HistoryResponse } from "@/lib/types"
+import type { ClientHistoryResponse, CurrentResponse, HistoryMode, HistoryRange, HistoryResponse } from "@/lib/types"
 
 const POLL_MS = 5000
 const SPARK_WINDOW = 24 // last N history points feed the stat-card sparklines
@@ -18,6 +18,8 @@ export default function Page() {
   const [current, setCurrent] = useState<CurrentResponse | null>(null)
   const [history, setHistory] = useState<HistoryResponse | null>(null)
   const [range, setRange] = useState<HistoryRange>("1h")
+  const [mode, setMode] = useState<HistoryMode>("wan")
+  const [clientHistory, setClientHistory] = useState<ClientHistoryResponse | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -38,7 +40,7 @@ export default function Page() {
     let cancelled = false
     async function load() {
       try {
-        const r = await fetch(`/api/history?range=${range}`, { cache: "no-store" })
+        const r = await fetch(`/api/history?range=${range}&mode=wan`, { cache: "no-store" })
         if (!cancelled && r.ok) setHistory(await r.json())
       } catch {
         /* ignore */
@@ -48,6 +50,20 @@ export default function Page() {
     const id = setInterval(load, POLL_MS * 2)
     return () => { cancelled = true; clearInterval(id) }
   }, [range])
+
+  useEffect(() => {
+    if (mode !== "clients") return
+    let cancelled = false
+    async function load() {
+      try {
+        const r = await fetch(`/api/history?range=${range}&mode=clients`, { cache: "no-store" })
+        if (!cancelled && r.ok) setClientHistory(await r.json())
+      } catch { /* ignore */ }
+    }
+    load()
+    const id = setInterval(load, POLL_MS * 2)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [mode, range])
 
   const sample = current?.sample
   const online = sample?.online ?? false
@@ -85,8 +101,11 @@ export default function Page() {
 
         <TrafficChart
           points={points}
+          clientHistory={clientHistory}
           range={range}
+          mode={mode}
           onRangeChange={setRange}
+          onModeChange={setMode}
         />
 
         <ClientsTable clients={current?.clients ?? []} />
