@@ -1,5 +1,7 @@
 # M8550 Monitor
 
+![dashboard](docs/screenshot.png)
+
 A self-hosted ops dashboard for the **TP-Link M8550 5G mobile router**. Polls the router's local CGI every 5 seconds and shows live download / upload rates, a 1h / 24h / 7d traffic chart with WAN and per-client breakdown modes, connected-clients with their bandwidth, real 5G NR signal metrics (SS-RSRP / SS-RSRQ / SS-SINR), and host system stats (CPU / memory / total data used).
 
 Two Docker Compose services share one SQLite file: a Python collector that polls and writes, and a Next.js dashboard that reads.
