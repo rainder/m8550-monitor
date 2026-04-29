@@ -1,18 +1,23 @@
+/**
+ * Always render in MB/s for consistency across the dashboard. Two decimals
+ * normally; three decimals for sub-1 MB/s values so very low rates don't
+ * collapse to "0.00".
+ */
 export function formatRate(bytesPerSec: number | null): string {
   if (bytesPerSec === null) return "—"
-  if (bytesPerSec < 1000) return `${bytesPerSec} B/s`
-  if (bytesPerSec < 1000 * 1000) return `${(bytesPerSec / 1000).toFixed(1)} KB/s`
-  if (bytesPerSec < 1000 * 1000 * 1000) return `${(bytesPerSec / (1000 * 1000)).toFixed(2)} MB/s`
-  return `${(bytesPerSec / (1000 * 1000 * 1000)).toFixed(2)} GB/s`
+  const mb = bytesPerSec / 1_000_000
+  if (mb === 0) return "0.00 MB/s"
+  if (mb < 1) return `${mb.toFixed(3)} MB/s`
+  return `${mb.toFixed(2)} MB/s`
 }
 
 /** Split a rate into [number, unit] so callers can layout them with different styles. */
 export function splitRate(bytesPerSec: number | null): [string, string] {
   if (bytesPerSec === null) return ["—", ""]
-  if (bytesPerSec < 1000) return [String(bytesPerSec), "B/s"]
-  if (bytesPerSec < 1000 * 1000) return [(bytesPerSec / 1000).toFixed(1), "KB/s"]
-  if (bytesPerSec < 1000 * 1000 * 1000) return [(bytesPerSec / (1000 * 1000)).toFixed(2), "MB/s"]
-  return [(bytesPerSec / (1000 * 1000 * 1000)).toFixed(2), "GB/s"]
+  const mb = bytesPerSec / 1_000_000
+  if (mb === 0) return ["0.00", "MB/s"]
+  if (mb < 1) return [mb.toFixed(3), "MB/s"]
+  return [mb.toFixed(2), "MB/s"]
 }
 
 /** Cumulative bytes — base-1000, one decimal, never below 1 KB. */

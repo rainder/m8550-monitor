@@ -31,6 +31,13 @@ interface SampleRow {
   network_type: number | null
   wan_ipv4: string | null
   wan_ipv6: string | null
+  ss_rsrp: number | null
+  ss_rsrq: number | null
+  ss_sinr: number | null
+  nr_signal_strength: number | null
+  nr_band: string | null
+  lte_signal_strength: number | null
+  lte_band: string | null
 }
 
 export function latestSample(): Sample | null {
@@ -38,7 +45,9 @@ export function latestSample(): Sample | null {
     .prepare(
       "SELECT ts, rx_rate, tx_rate, online, " +
       "total_bytes, sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct, " +
-      "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6 " +
+      "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6, " +
+      "ss_rsrp, ss_rsrq, ss_sinr, nr_signal_strength, nr_band, " +
+      "lte_signal_strength, lte_band " +
       "FROM samples ORDER BY ts DESC LIMIT 1",
     )
     .get() as SampleRow | undefined
@@ -61,6 +70,13 @@ export function latestSample(): Sample | null {
     networkType: row.network_type,
     wanIpv4: row.wan_ipv4,
     wanIpv6: row.wan_ipv6,
+    ssRsrp: row.ss_rsrp,
+    ssRsrq: row.ss_rsrq,
+    ssSinr: row.ss_sinr,
+    nrSignalStrength: row.nr_signal_strength,
+    nrBand: row.nr_band,
+    lteSignalStrength: row.lte_signal_strength,
+    lteBand: row.lte_band,
   }
 }
 

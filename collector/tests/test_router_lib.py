@@ -236,13 +236,76 @@ def test_snapshot_carries_wan_status():
 
     fake_lib.ActItem = MagicMock()
     fake_lib.ActItem.GL = "gl"
-    fake_lib.req_act.return_value = ("raw", [[]])
+    fake_lib.ActItem.GET = "go"
+    # Three req_act calls: _fetch_stat_rows, _fetch_link_cfg, _fetch_serving_cells
+    fake_lib.req_act.side_effect = [
+        ("raw", [[]]),   # stat rows → empty
+        ("raw", [[]]),   # link cfg → empty
+        ("raw", [[]]),   # serving cells → no active cells
+    ]
 
     client = LibRouterClient(_lib=fake_lib)
     snap = client.snapshot()
 
     assert snap.wan_status.sig_level == 4
-    assert snap.wan_status.rsrp == -82
+    # rsrp/rsrq/snr now come from serving-cell data; empty → None
+    assert snap.wan_status.rsrp is None
     assert snap.wan_status.isp_name == "Bite"
     assert snap.wan_status.cpu_pct == 0.59
     assert snap.wan_status.mem_pct == 0.52
+
+
+def test_snapshot_includes_serving_cell_signal(monkeypatch):
+    fake_lib = MagicMock()
+
+    lte_status = MagicMock()
+    lte_status.total_statistics = 1
+    lte_status.cur_rx_speed = 0
+    lte_status.cur_tx_speed = 0
+    lte_status.sig_level = 0
+    lte_status.rsrp = 0
+    lte_status.rsrq = 0
+    lte_status.snr = 0
+    lte_status.isp_name = "Bite"
+    fake_lib.get_lte_status.return_value = lte_status
+
+    status = MagicMock()
+    status.devices = []
+    status.cpu_usage = 0.3
+    status.mem_usage = 0.5
+    fake_lib.get_status.return_value = status
+
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.GET = "go"
+
+    # Three req_act calls in order:
+    #   1) DEV2_STAT_ENTRY  (clients) → empty
+    #   2) DEV2_LTE_LINK_CFG          → link cfg dict
+    #   3) DEV2_LTE_SERVING_CELL_INFO → list of cells
+    fake_lib.req_act.side_effect = [
+        ("raw", [[]]),
+        ("raw", [{"connectedBand": "B3;N40", "endcStatus": "1", "networkType": "8",
+                  "ipv4": "10.0.0.1", "ipv6": "2a00::1"}]),
+        ("raw", [[
+            {"networkType": "3", "cellConnectionStatus": "1", "band": "3",
+             "RSRP": "-80", "RSRQ": "-17", "SNR": "60", "signalStrength": "3"},
+            {"networkType": "8", "cellConnectionStatus": "1", "band": "40",
+             "SSRSRP": "-74", "SSRSRQ": "-10", "SSSINR": "310",
+             "signalStrength": "4"},
+        ]]),
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    snap = client.snapshot()
+
+    assert snap.wan_status.rsrp == -80
+    assert snap.wan_status.rsrq == -17
+    assert snap.wan_status.snr == 60
+    assert snap.wan_status.lte_signal_strength == 3
+    assert snap.wan_status.lte_band == "3"
+    assert snap.wan_status.ss_rsrp == -74
+    assert snap.wan_status.ss_rsrq == -10
+    assert snap.wan_status.ss_sinr == 310
+    assert snap.wan_status.nr_signal_strength == 4
+    assert snap.wan_status.nr_band == "40"

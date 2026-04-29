@@ -21,7 +21,14 @@ CREATE TABLE IF NOT EXISTS samples (
     endc_status     INTEGER,
     network_type    INTEGER,
     wan_ipv4        TEXT,
-    wan_ipv6        TEXT
+    wan_ipv6        TEXT,
+    ss_rsrp              INTEGER,
+    ss_rsrq              INTEGER,
+    ss_sinr              INTEGER,
+    nr_signal_strength   INTEGER,
+    nr_band              TEXT,
+    lte_signal_strength  INTEGER,
+    lte_band             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clients (
@@ -73,8 +80,10 @@ class Store:
                 "INSERT OR REPLACE INTO samples ("
                 "ts, total_bytes, rx_rate, tx_rate, online, "
                 "sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct, "
-                "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6, "
+                "ss_rsrp, ss_rsrq, ss_sinr, nr_signal_strength, nr_band, "
+                "lte_signal_strength, lte_band"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     ts, total_bytes, rx_rate, tx_rate, int(online),
                     w.sig_level if w else None,
@@ -89,6 +98,13 @@ class Store:
                     w.network_type   if w else None,
                     w.wan_ipv4       if w else None,
                     w.wan_ipv6       if w else None,
+                    w.ss_rsrp              if w else None,
+                    w.ss_rsrq              if w else None,
+                    w.ss_sinr              if w else None,
+                    w.nr_signal_strength   if w else None,
+                    w.nr_band              if w else None,
+                    w.lte_signal_strength  if w else None,
+                    w.lte_band             if w else None,
                 ),
             )
 

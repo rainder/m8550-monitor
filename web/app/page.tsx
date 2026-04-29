@@ -72,7 +72,7 @@ export default function Page() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <StatCard label="Download" rate={sample?.rxRate ?? null} sparkValues={sparkRx} accent="down" />
           <StatCard label="Upload"   rate={sample?.txRate ?? null} sparkValues={sparkTx} accent="up" />
-          <SignalPanel sample={sample ?? null} recent={points.slice(-30)} />
+          <SignalPanel sample={sample ?? null} />
         </div>
 
         <div className="flex items-center justify-end gap-2 text-[11px] font-mono text-zinc-500">

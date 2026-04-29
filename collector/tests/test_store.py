@@ -22,6 +22,9 @@ def test_init_creates_schema(tmp_path):
         "ts", "total_bytes", "rx_rate", "tx_rate", "online",
         "sig_level", "rsrp", "rsrq", "snr", "isp_name", "cpu_pct", "mem_pct",
         "connected_band", "endc_status", "network_type", "wan_ipv4", "wan_ipv6",
+        "ss_rsrp", "ss_rsrq", "ss_sinr",
+        "nr_signal_strength", "nr_band",
+        "lte_signal_strength", "lte_band",
     }
 
     client_cols = {
@@ -228,17 +231,23 @@ def test_append_sample_persists_wan_status(tmp_path):
             isp_name="Bite", cpu_pct=0.59, mem_pct=0.52,
             connected_band="B3;N40", endc_status=1, network_type=8,
             wan_ipv4="100.64.1.1", wan_ipv6="2001:db8::1",
+            ss_rsrp=-74, ss_rsrq=-10, ss_sinr=310,
+            nr_signal_strength=4, nr_band="40",
+            lte_signal_strength=3, lte_band="3",
         ),
     )
 
     conn = sqlite3.connect(db)
     row = conn.execute(
         "SELECT sig_level, rsrp, rsrq, snr, isp_name, cpu_pct, mem_pct, "
-        "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6 FROM samples"
+        "connected_band, endc_status, network_type, wan_ipv4, wan_ipv6, "
+        "ss_rsrp, ss_rsrq, ss_sinr, nr_signal_strength, nr_band, "
+        "lte_signal_strength, lte_band FROM samples"
     ).fetchone()
     assert row == (
         4, -82, -10, 14, "Bite", 0.59, 0.52,
         "B3;N40", 1, 8, "100.64.1.1", "2001:db8::1",
+        -74, -10, 310, 4, "40", 3, "3",
     )
 
 

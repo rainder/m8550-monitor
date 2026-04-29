@@ -16,15 +16,14 @@ class RouterClientSnapshot:
 class WanStatus:
     """Signal, ISP, link, and system-resource fields from the router.
 
-    The M8550 firmware reports `0` for sig_level / rsrp / rsrq / snr even
-    when on a healthy 5G connection — the local CGI doesn't compute
-    them. Real link information lives in `connected_band` /
-    `endc_status` / `network_type` (from DEV2_LTE_LINK_CFG) instead.
+    Real RF metrics come from DEV2_LTE_SERVING_CELL_INFO (OID gl). The
+    older DEV2_LTE_NET_STATUS always returns 0 for rfInfoRsrp etc on
+    M8550 firmware.
     """
     sig_level: int | None
-    rsrp: int | None
-    rsrq: int | None
-    snr: int | None
+    rsrp: int | None             # LTE serving-cell RSRP (real value when on LTE)
+    rsrq: int | None             # LTE serving-cell RSRQ
+    snr: int | None              # LTE serving-cell SNR (×10; 60 = 6.0 dB)
     isp_name: str | None
     cpu_pct: float | None
     mem_pct: float | None
@@ -33,6 +32,15 @@ class WanStatus:
     network_type: int | None         # firmware-specific code (8 = 5G NSA on M8550)
     wan_ipv4: str | None
     wan_ipv6: str | None
+    # 5G NR primary cell (SS- = Synchronization Signal)
+    ss_rsrp: int | None          # 5G NR SS-RSRP dBm
+    ss_rsrq: int | None          # 5G NR SS-RSRQ dB
+    ss_sinr: int | None          # 5G NR SS-SINR ×10 (310 = 31.0 dB)
+    nr_signal_strength: int | None   # 0..5
+    nr_band: str | None          # e.g. "40"
+    # LTE primary cell extras
+    lte_signal_strength: int | None  # 0..5
+    lte_band: str | None         # e.g. "3"
 
 
 @dataclass(frozen=True)
@@ -125,11 +133,12 @@ class LibRouterClient:
             )
 
         link_cfg = self._fetch_link_cfg()
+        lte_cell, nr_cell = self._fetch_serving_cells()
         wan_status = WanStatus(
             sig_level=_safe_int(getattr(lte, "sig_level", None)),
-            rsrp=_safe_int(getattr(lte, "rsrp", None)),
-            rsrq=_safe_int(getattr(lte, "rsrq", None)),
-            snr=_safe_int(getattr(lte, "snr", None)),
+            rsrp=_safe_int(lte_cell.get("RSRP")),
+            rsrq=_safe_int(lte_cell.get("RSRQ")),
+            snr=_safe_int(lte_cell.get("SNR")),
             isp_name=getattr(lte, "isp_name", None) or None,
             cpu_pct=_safe_float(getattr(status, "cpu_usage", None)),
             mem_pct=_safe_float(getattr(status, "mem_usage", None)),
@@ -138,6 +147,13 @@ class LibRouterClient:
             network_type=_safe_int(link_cfg.get("networkType")),
             wan_ipv4=link_cfg.get("ipv4") or None,
             wan_ipv6=link_cfg.get("ipv6") or None,
+            ss_rsrp=_safe_int(nr_cell.get("SSRSRP")),
+            ss_rsrq=_safe_int(nr_cell.get("SSRSRQ")),
+            ss_sinr=_safe_int(nr_cell.get("SSSINR")),
+            nr_signal_strength=_safe_int(nr_cell.get("signalStrength")),
+            nr_band=(nr_cell.get("band") or None),
+            lte_signal_strength=_safe_int(lte_cell.get("signalStrength")),
+            lte_band=(lte_cell.get("band") or None),
         )
 
         return RouterSnapshot(
@@ -171,6 +187,33 @@ class LibRouterClient:
         if isinstance(v, list):
             v = v[0] if v else {}
         return v if isinstance(v, dict) else {}
+
+    def _fetch_serving_cells(self) -> tuple[dict, dict]:
+        """Returns (lte_cell, nr_cell). Either may be empty {} when not connected.
+
+        Active cells are those with cellConnectionStatus == "1". The router
+        returns up to one LTE entry (networkType "3") and one NR entry
+        (networkType "8") on this M8550 firmware.
+        """
+        try:
+            acts = [self._lib.ActItem(self._lib.ActItem.GL, "DEV2_LTE_SERVING_CELL_INFO")]
+            _, values = self._lib.req_act(acts)
+        except Exception:
+            return {}, {}
+        if not values or not values[0]:
+            return {}, {}
+        lte_cell, nr_cell = {}, {}
+        for entry in values[0]:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("cellConnectionStatus")) != "1":
+                continue
+            nt = str(entry.get("networkType"))
+            if nt == "3":
+                lte_cell = entry
+            elif nt == "8":
+                nr_cell = entry
+        return lte_cell, nr_cell
 
     def _fetch_stat_rows(self) -> dict[str, int]:
         """Map MAC → cumulative total_bytes, from DEV2_STAT_ENTRY."""

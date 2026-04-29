@@ -4,20 +4,27 @@ export interface Sample {
   txRate: number | null
   online: boolean
   totalBytes: number | null
-  // Signal — usually all 0 on this firmware (M8550 local CGI doesn't report).
   sigLevel: number | null
-  rsrp: number | null
-  rsrq: number | null
-  snr: number | null
+  rsrp: number | null            // LTE serving-cell RSRP dBm
+  rsrq: number | null            // LTE serving-cell RSRQ dB
+  snr: number | null             // LTE serving-cell SNR ×10 (60 = 6.0 dB)
   ispName: string | null
   cpuPct: number | null         // 0..1
   memPct: number | null         // 0..1
-  // Link config (these DO populate on M8550):
   connectedBand: string | null  // e.g. "B3;N40"
   endcStatus: number | null     // 1 = EN-DC active (5G NSA), 0 = LTE only
   networkType: number | null    // firmware-specific code (8 = 5G NSA)
   wanIpv4: string | null
   wanIpv6: string | null
+  // 5G NR primary cell
+  ssRsrp: number | null          // dBm
+  ssRsrq: number | null          // dB
+  ssSinr: number | null          // ×10 (310 = 31.0 dB)
+  nrSignalStrength: number | null  // 0..5
+  nrBand: string | null
+  // LTE primary cell extras
+  lteSignalStrength: number | null
+  lteBand: string | null
 }
 
 export interface Client {

@@ -12,7 +12,10 @@ def _wan_idle() -> WanStatus:
     return WanStatus(sig_level=None, rsrp=None, rsrq=None, snr=None,
                      isp_name=None, cpu_pct=None, mem_pct=None,
                      connected_band=None, endc_status=None, network_type=None,
-                     wan_ipv4=None, wan_ipv6=None)
+                     wan_ipv4=None, wan_ipv6=None,
+                     ss_rsrp=None, ss_rsrq=None, ss_sinr=None,
+                     nr_signal_strength=None, nr_band=None,
+                     lte_signal_strength=None, lte_band=None)
 
 
 class FakeRouter:
@@ -206,7 +209,10 @@ def test_poller_persists_wan_status(tmp_path):
                                   isp_name="Bite", cpu_pct=0.59, mem_pct=0.52,
                                   connected_band="B3;N40", endc_status=1,
                                   network_type=8, wan_ipv4="10.0.0.1",
-                                  wan_ipv6=None),
+                                  wan_ipv6=None,
+                                  ss_rsrp=None, ss_rsrq=None, ss_sinr=None,
+                                  nr_signal_strength=None, nr_band=None,
+                                  lte_signal_strength=None, lte_band=None),
             clients=[],
         ),
     ])

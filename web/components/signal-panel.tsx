@@ -1,39 +1,60 @@
-import type { HistoryPoint, Sample } from "@/lib/types"
+import type { Sample } from "@/lib/types"
 
 type Props = {
   sample: Sample | null
-  recent: HistoryPoint[]      // recent history points for the link-quality estimate
 }
 
 /**
  * Two-section panel:
  *
- * 1. Top: Carrier · Mode badge · 5-bar LINK QUALITY indicator. The router
- *    doesn't report real RF metrics on this firmware (RSRP/RSRQ/SNR/sigLevel
- *    always 0 — Tether pulls them from the cloud), so the bars are a
- *    quality proxy computed from observed uptime + throughput stability over
- *    the recent window.
+ * 1. Top: Carrier · Mode badge · 5-bar signal-strength indicator.
+ *    Primary radio is 5G NR when ssRsrp is available, otherwise LTE.
+ *    Bars reflect the primary cell's signalStrength (0..5 from firmware).
+ *    Colour is based on RSRP / SS-RSRP thresholds.
  *
- * 2. Bottom: SIGNAL / NOISE rows showing the literal RSRP/RSRQ/SNR values
- *    (will be dashes on this firmware) plus the WAN IPs and bands the router
- *    DOES expose.
+ * 2. Bottom: RSRP / RSRQ / SINR|SNR rows (real values from
+ *    DEV2_LTE_SERVING_CELL_INFO) plus BANDS chips and WAN IP.
  */
-export function SignalPanel({ sample, recent }: Props) {
-  const ispName = sample?.ispName ?? null
+export function SignalPanel({ sample }: Props) {
+  const ispName       = sample?.ispName       ?? null
   const connectedBand = sample?.connectedBand ?? null
-  const endcStatus = sample?.endcStatus ?? null
-  const networkType = sample?.networkType ?? null
-  const wanIpv4 = sample?.wanIpv4 ?? null
-  const rsrp = sample?.rsrp ?? null
-  const rsrq = sample?.rsrq ?? null
-  const snr = sample?.snr ?? null
+  const endcStatus    = sample?.endcStatus    ?? null
+  const networkType   = sample?.networkType   ?? null
+  const wanIpv4       = sample?.wanIpv4       ?? null
+
+  // LTE cell
+  const rsrp             = sample?.rsrp             ?? null
+  const rsrq             = sample?.rsrq             ?? null
+  const snr              = sample?.snr              ?? null
+  const lteSignalStrength = sample?.lteSignalStrength ?? null
+
+  // NR cell
+  const ssRsrp            = sample?.ssRsrp            ?? null
+  const ssRsrq            = sample?.ssRsrq            ?? null
+  const ssSinr            = sample?.ssSinr            ?? null
+  const nrSignalStrength  = sample?.nrSignalStrength  ?? null
+
+  // Prefer NR when ssRsrp is present and non-zero
+  const hasNr  = ssRsrp !== null && ssRsrp !== 0
+  const hasLte = rsrp   !== null && rsrp   !== 0
+
+  const primary: "nr" | "lte" | "none" = hasNr ? "nr" : hasLte ? "lte" : "none"
+
+  const bars = primary === "nr"
+    ? (nrSignalStrength ?? 0)
+    : primary === "lte"
+      ? (lteSignalStrength ?? 0)
+      : 0
+
+  const tone = primary === "nr"
+    ? nrTone(ssRsrp!)
+    : primary === "lte"
+      ? lteTone(rsrp!)
+      : "none"
 
   const mode = decodeMode(networkType, endcStatus, connectedBand)
   const bands = parseBands(connectedBand)
-  const isFiveG = mode === "5G NSA" || mode === "5G SA"
-  const quality = linkQuality(recent, sample?.online ?? false)
-
-  const rfNotReported = (rsrp ?? 0) === 0 && (rsrq ?? 0) === 0 && (snr ?? 0) === 0
+  const isFiveG = primary === "nr" || mode === "5G NSA" || mode === "5G SA"
 
   return (
     <div className="relative overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
@@ -45,7 +66,7 @@ export function SignalPanel({ sample, recent }: Props) {
           <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-mono truncate">
             Signal{ispName ? ` · ${ispName}` : ""}
           </span>
-          {mode && (
+          {primary !== "none" && (
             <span
               className={
                 "px-1.5 py-0.5 rounded-sm text-[9px] font-mono uppercase tracking-wider " +
@@ -54,23 +75,44 @@ export function SignalPanel({ sample, recent }: Props) {
                   : "bg-zinc-800 text-zinc-400 border border-zinc-700")
               }
             >
+              {primary === "nr" ? "5G NR" : "LTE"}
+            </span>
+          )}
+          {primary === "none" && mode && (
+            <span className="px-1.5 py-0.5 rounded-sm text-[9px] font-mono uppercase tracking-wider bg-zinc-800 text-zinc-400 border border-zinc-700">
               {mode}
             </span>
           )}
         </div>
-        <QualityBars quality={quality} />
+        <SignalBars bars={bars} tone={tone} primary={primary} />
       </div>
 
       <div className="space-y-2 text-xs font-mono">
-        <Row label="RSRP">
-          <Reading value={rsrp} unit="dBm" />
-        </Row>
-        <Row label="RSRQ">
-          <Reading value={rsrq} unit="dB" />
-        </Row>
-        <Row label="SNR">
-          <Reading value={snr} unit="dB" />
-        </Row>
+        {primary === "nr" ? (
+          <>
+            <Row label="RSRP">
+              <Reading value={ssRsrp} unit="dBm" />
+            </Row>
+            <Row label="RSRQ">
+              <Reading value={ssRsrq} unit="dB" />
+            </Row>
+            <Row label="SINR">
+              <ReadingScaled value={ssSinr} unit="dB" />
+            </Row>
+          </>
+        ) : (
+          <>
+            <Row label="RSRP">
+              <Reading value={rsrp} unit="dBm" />
+            </Row>
+            <Row label="RSRQ">
+              <Reading value={rsrq} unit="dB" />
+            </Row>
+            <Row label="SNR">
+              <ReadingScaled value={snr} unit="dB" />
+            </Row>
+          </>
+        )}
 
         <div className="my-2 border-t border-[var(--color-border)]" />
 
@@ -88,17 +130,21 @@ export function SignalPanel({ sample, recent }: Props) {
             {wanIpv4 ?? "—"}
           </span>
         </Row>
-
-        {rfNotReported && (
-          <p className="text-[10px] text-zinc-600 leading-relaxed pt-1">
-            RSRP / RSRQ / SNR are not exposed by this M8550 firmware — quality
-            bars are derived from recent uptime and throughput stability
-            instead.
-          </p>
-        )}
       </div>
     </div>
   )
+}
+
+function nrTone(rsrp: number): "good" | "warn" | "bad" {
+  if (rsrp >= -80) return "good"
+  if (rsrp >= -100) return "warn"
+  return "bad"
+}
+
+function lteTone(rsrp: number): "good" | "warn" | "bad" {
+  if (rsrp >= -90) return "good"
+  if (rsrp >= -110) return "warn"
+  return "bad"
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -122,19 +168,44 @@ function Reading({ value, unit }: { value: number | null; unit: string }) {
   )
 }
 
-function QualityBars({ quality }: { quality: { bars: number; tone: "good" | "warn" | "bad" | "none" } }) {
+/** For ×10-scaled fields (SNR, SINR): displays value/10 to one decimal place. */
+function ReadingScaled({ value, unit }: { value: number | null; unit: string }) {
+  const real = value !== null && value !== 0
+  return (
+    <span>
+      <span className={real ? "text-zinc-100 tabular-nums" : "text-zinc-600 tabular-nums"}>
+        {real ? (value! / 10).toFixed(1) : "—"}
+      </span>
+      <span className="text-zinc-700 ml-1">{unit}</span>
+    </span>
+  )
+}
+
+function SignalBars({
+  bars,
+  tone,
+  primary,
+}: {
+  bars: number
+  tone: "good" | "warn" | "bad" | "none"
+  primary: "nr" | "lte" | "none"
+}) {
   const colour =
-    quality.tone === "good" ? "bg-emerald-400" :
-    quality.tone === "warn" ? "bg-amber-400" :
-    quality.tone === "bad"  ? "bg-red-400" :
+    tone === "good" ? "bg-emerald-400" :
+    tone === "warn" ? "bg-amber-400" :
+    tone === "bad"  ? "bg-red-400" :
     "bg-zinc-700"
 
+  const label = primary === "none"
+    ? "No signal data"
+    : `Signal strength: ${bars}/5`
+
   return (
-    <div className="flex items-end gap-[3px] h-5" title={`Link quality (derived): ${quality.bars}/5`}>
+    <div className="flex items-end gap-[3px] h-5" title={label}>
       {[0, 1, 2, 3, 4].map((i) => (
         <span
           key={i}
-          className={`w-[5px] rounded-[1px] ${i < quality.bars ? colour : "bg-zinc-800"}`}
+          className={`w-[5px] rounded-[1px] ${i < bars ? colour : "bg-zinc-800"}`}
           style={{ height: `${30 + i * 14}%` }}
         />
       ))}
@@ -181,32 +252,4 @@ function decodeMode(
   if (hasLte) return "LTE"
   if (networkType === null) return null
   return `Type ${networkType}`
-}
-
-/**
- * Derive a 0-5 bar link-quality indicator from recent history.
- * - Currently offline → 0 bars (red).
- * - All recent ticks offline → 0 bars (red).
- * - Some offline ticks → bars scale by uptime ratio.
- * - All ticks online but rx is dead-quiet (mean < 1 KB/s and we know we're
- *   meant to be active) → 4 bars (no penalty for genuinely idle moments).
- * - All ticks online with healthy mean throughput → 5 bars (green).
- */
-function linkQuality(
-  recent: HistoryPoint[],
-  online: boolean,
-): { bars: number; tone: "good" | "warn" | "bad" | "none" } {
-  if (!online) return { bars: 0, tone: "bad" }
-  if (recent.length < 3) return { bars: 4, tone: "good" }
-
-  const last = recent.slice(-30)
-  // Treat a `null` rxRate as a missed sample (router unreachable that tick).
-  const offlineCount = last.filter((p) => p.rxRate === null && p.txRate === null).length
-  const total = last.length
-  const uptime = (total - offlineCount) / total
-
-  if (uptime < 0.5) return { bars: 1, tone: "bad" }
-  if (uptime < 0.85) return { bars: 2, tone: "warn" }
-  if (uptime < 0.99) return { bars: 3, tone: "warn" }
-  return { bars: 5, tone: "good" }
 }
