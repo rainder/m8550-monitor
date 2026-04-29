@@ -15,7 +15,11 @@ services:
     build: ./web
     image: m8550-web:dev
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
+    # Run as uid 1000 to match the collector — both containers need write access
+    # to ./data so SQLite can create -shm/-wal sidecars. The image's default
+    # nextjs user (uid 1001) cannot write to a host data dir owned by uid 1000.
+    user: "1000:1000"
     # NOT :ro — SQLite WAL mode needs to write -shm/-wal sidecars into the
     # data dir even for readers. Read-only is enforced at the application
     # layer in web/lib/db.ts (`new Database(path, { readonly: true })`).
