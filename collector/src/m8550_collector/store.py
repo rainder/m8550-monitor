@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS sms_messages (
     unread       INTEGER NOT NULL,
     synced_at    INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint     TEXT PRIMARY KEY,
+    p256dh       TEXT NOT NULL,
+    auth         TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
 """
 
 
@@ -150,10 +157,19 @@ class Store:
             ).fetchall()
             return {mac: (ts, total) for mac, ts, total in rows}
 
-    def replace_sms(self, ts: int, messages) -> None:
+    def replace_sms(self, ts: int, messages) -> list:
         """Full-mirror the router's inbox: replace our cached rows so deleted
-        messages disappear and unread/content edits apply."""
+        messages disappear and unread/content edits apply. Returns the
+        subset of ``messages`` whose ids were not in our cache before this
+        call — these are the freshly-arrived ones the caller may want to
+        push-notify on. Treats the first-ever sync (cache empty) as having
+        no new messages so that adding the feature doesn't notify on the
+        existing inbox backlog."""
         with self._connect() as conn:
+            prev_ids: set[int] = {
+                row[0] for row in conn.execute("SELECT id FROM sms_messages")
+            }
+            had_cache_before = bool(prev_ids)
             conn.execute("DELETE FROM sms_messages")
             conn.executemany(
                 "INSERT INTO sms_messages "
@@ -163,6 +179,38 @@ class Store:
                     (m.id, m.sender, m.content, m.received_at, int(m.unread), ts)
                     for m in messages
                 ],
+            )
+        if not had_cache_before:
+            return []
+        return [m for m in messages if m.id not in prev_ids]
+
+    def list_push_subscriptions(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT endpoint, p256dh, auth FROM push_subscriptions"
+            ).fetchall()
+        return [
+            {"endpoint": r[0], "p256dh": r[1], "auth": r[2]} for r in rows
+        ]
+
+    def add_push_subscription(
+        self, endpoint: str, p256dh: str, auth: str, created_at: int,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO push_subscriptions "
+                "(endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?)",
+                (endpoint, p256dh, auth, created_at),
+            )
+
+    def delete_push_subscriptions(self, endpoints) -> None:
+        endpoints = list(endpoints)
+        if not endpoints:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "DELETE FROM push_subscriptions WHERE endpoint = ?",
+                [(e,) for e in endpoints],
             )
 
     def list_sms(self) -> list[dict]:

@@ -3,6 +3,7 @@ import sys
 
 from .config import load_config
 from .poller import Poller
+from .push import load_or_create_vapid
 from .router import LibRouterClient
 from .store import Store
 
@@ -24,6 +25,8 @@ def main() -> int:
 
     store = Store(cfg.db_path)
     store.init_schema()
+    vapid = load_or_create_vapid(cfg.vapid_path, cfg.vapid_subject)
+    log.info("vapid public key: %s…", vapid.public[:24])
     router = LibRouterClient(
         host=cfg.host,
         password=cfg.password,
@@ -31,7 +34,9 @@ def main() -> int:
         stale_session_threshold=cfg.stale_session_threshold,
     )
     Poller(
-        router, store, sms_poll_interval=cfg.sms_poll_interval,
+        router, store,
+        sms_poll_interval=cfg.sms_poll_interval,
+        vapid_keys=vapid,
     ).run_forever(cfg.poll_interval)
     return 0
 

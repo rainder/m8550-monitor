@@ -22,6 +22,8 @@ def test_load_config_reads_env(monkeypatch):
         auth_backoff_seconds=120,
         stale_session_threshold=7,
         sms_poll_interval=30,
+        vapid_path="/data/vapid.json",
+        vapid_subject="mailto:admin@example.com",
     )
 
 

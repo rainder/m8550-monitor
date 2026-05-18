@@ -2,6 +2,7 @@ import logging
 import time
 from typing import Callable
 
+from .push import PushSubscription, VapidKeys, dispatch_sms_pushes
 from .rate import RateInputs, compute_rate
 from .router import AuthError, RouterClient
 from .store import Store
@@ -18,12 +19,14 @@ class Poller:
         now: Callable[[], int] = lambda: int(time.time()),
         max_gap_seconds: int = 10,
         sms_poll_interval: int = 60,
+        vapid_keys: VapidKeys | None = None,
     ):
         self.router = router
         self.store = store
         self.now = now
         self.max_gap_seconds = max_gap_seconds
         self.sms_poll_interval = sms_poll_interval
+        self.vapid_keys = vapid_keys
         self._last_sms_fetch_ts = 0
 
     def tick(self) -> None:
@@ -87,12 +90,31 @@ class Poller:
         ):
             try:
                 messages = self.router.list_sms()
-                self.store.replace_sms(ts=ts, messages=messages)
+                new_messages = self.store.replace_sms(ts=ts, messages=messages)
                 self._last_sms_fetch_ts = ts
+                if new_messages and self.vapid_keys is not None:
+                    self._push_new_sms(new_messages)
             except (AuthError, ConnectionError) as e:
                 log.warning("sms fetch skipped: %s", e)
             except Exception:
                 log.exception("sms fetch failed")
+
+    def _push_new_sms(self, new_messages) -> None:
+        try:
+            subs = [
+                PushSubscription(endpoint=r["endpoint"], p256dh=r["p256dh"], auth=r["auth"])
+                for r in self.store.list_push_subscriptions()
+            ]
+            if not subs:
+                return
+            log.info("dispatching push for %d new sms to %d subs",
+                     len(new_messages), len(subs))
+            assert self.vapid_keys is not None
+            dead = dispatch_sms_pushes(new_messages, subs, self.vapid_keys)
+            if dead:
+                self.store.delete_push_subscriptions(dead)
+        except Exception:
+            log.exception("push dispatch failed")
 
     def run_forever(self, interval: int) -> None:
         """Poll forever. Use a longer sleep when the router is unreachable."""

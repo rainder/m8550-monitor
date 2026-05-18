@@ -11,6 +11,8 @@ class Config:
     auth_backoff_seconds: int
     stale_session_threshold: int
     sms_poll_interval: int
+    vapid_path: str
+    vapid_subject: str
 
 
 def load_config() -> Config:
@@ -22,4 +24,6 @@ def load_config() -> Config:
         auth_backoff_seconds=int(os.environ.get("AUTH_BACKOFF_SECONDS", "300")),
         stale_session_threshold=int(os.environ.get("STALE_SESSION_THRESHOLD", "4")),
         sms_poll_interval=int(os.environ.get("SMS_POLL_INTERVAL", "60")),
+        vapid_path=os.environ.get("VAPID_PATH", "/data/vapid.json"),
+        vapid_subject=os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com"),
     )

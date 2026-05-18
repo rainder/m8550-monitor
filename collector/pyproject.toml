@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "requests>=2.32",
     "tplinkrouterc6u>=5.18",
+    "pywebpush>=2.0",
 ]
 
 [project.optional-dependencies]

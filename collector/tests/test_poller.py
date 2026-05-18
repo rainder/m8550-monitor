@@ -228,6 +228,20 @@ def test_connection_error_writes_offline_row(tmp_path):
     assert count == 0  # no clients written when router unreachable
 
 
+class FakePushBus:
+    def __init__(self):
+        self.calls: list[tuple[int, list]] = []
+
+    def __call__(self, new_messages, subs, keys):
+        self.calls.append((len(subs), list(new_messages)))
+        return []  # no dead
+
+
+def iter_clock(values):
+    it = iter(values)
+    return lambda: next(it)
+
+
 def test_poller_fetches_sms_on_first_tick(tmp_path):
     store = _store(tmp_path)
     sms = [
@@ -294,6 +308,65 @@ def test_poller_sms_fetch_failure_does_not_kill_tick(tmp_path):
     p.tick()  # must not raise; main sample still recorded
     sample = store.latest_sample()
     assert sample is not None and sample["online"] is True
+
+
+def test_poller_dispatches_push_for_new_sms(tmp_path, monkeypatch):
+    """A push fires only for SMS ids that weren't in the cache before — and
+    only after the first sync (so we don't notify on the existing backlog
+    when a user first installs the feature)."""
+    from m8550_collector import poller as poller_mod
+    from m8550_collector.push import VapidKeys
+
+    bus = FakePushBus()
+    monkeypatch.setattr(poller_mod, "dispatch_sms_pushes", bus)
+
+    store = _store(tmp_path)
+    store.add_push_subscription("ep1", "p", "a", created_at=0)
+
+    fixed_keys = VapidKeys(public="P", private="K", subject="mailto:t@t")
+    snap = lambda: RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                                  wan_status=_wan_idle(), clients=[])
+
+    initial_sms = [SmsMessage(id=1, sender="A", content="x", received_at=10, unread=False)]
+    new_arrival = initial_sms + [
+        SmsMessage(id=2, sender="B", content="y", received_at=20, unread=True),
+    ]
+    router = FakeRouter([snap(), snap()], sms=initial_sms)
+    p = Poller(router, store, now=iter_clock([100, 200]),
+               sms_poll_interval=60, vapid_keys=fixed_keys)
+
+    # First sync: cache was empty → no push, even though there's 1 message.
+    p.tick()
+    assert bus.calls == []
+
+    # Second sync: simulate id=2 arriving. Only the new id triggers a push.
+    router.sms = new_arrival
+    p.tick()
+    assert len(bus.calls) == 1
+    sub_count, dispatched = bus.calls[0]
+    assert sub_count == 1
+    assert [m.id for m in dispatched] == [2]
+
+
+def test_poller_does_not_dispatch_when_vapid_keys_absent(tmp_path, monkeypatch):
+    from m8550_collector import poller as poller_mod
+    bus = FakePushBus()
+    monkeypatch.setattr(poller_mod, "dispatch_sms_pushes", bus)
+
+    store = _store(tmp_path)
+    store.add_push_subscription("ep1", "p", "a", created_at=0)
+    snap = lambda: RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                                  wan_status=_wan_idle(), clients=[])
+    sms1 = [SmsMessage(id=1, sender="A", content="x", received_at=10, unread=False)]
+    sms2 = sms1 + [SmsMessage(id=2, sender="B", content="y", received_at=20, unread=True)]
+
+    router = FakeRouter([snap(), snap()], sms=sms1)
+    p = Poller(router, store, now=iter_clock([100, 200]),
+               sms_poll_interval=60, vapid_keys=None)
+    p.tick()
+    router.sms = sms2
+    p.tick()
+    assert bus.calls == []
 
 
 def test_poller_persists_wan_status(tmp_path):

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 
 import { ClientModal } from "@/components/client-modal"
 import { ClientsTable } from "@/components/clients-table"
+import { NotificationsToggle } from "@/components/notifications-toggle"
 import { SignalPanel } from "@/components/signal-panel"
 import { SmsPanel } from "@/components/sms-panel"
 import { StatCard } from "@/components/stat-card"
@@ -185,6 +186,7 @@ function Header({
         <SystemGauges cpuPct={cpuPct} memPct={memPct} />
         <Metric label="Clients" value={String(clientCount)} />
         {smsUnread > 0 && <Metric label="SMS" value={`${smsUnread} new`} accent />}
+        <NotificationsToggle />
         <Metric label="Updated" value={formatRelative(ageSeconds)} />
         <StatusIndicator online={online} ageSeconds={ageSeconds} />
       </div>
