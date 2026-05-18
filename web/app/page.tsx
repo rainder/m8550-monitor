@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 
+import { ClientModal } from "@/components/client-modal"
 import { ClientsTable } from "@/components/clients-table"
 import { SignalPanel } from "@/components/signal-panel"
 import { StatCard } from "@/components/stat-card"
@@ -20,6 +21,7 @@ export default function Page() {
   const [range, setRange] = useState<HistoryRange>("1h")
   const [mode, setMode] = useState<HistoryMode>("wan")
   const [clientHistory, setClientHistory] = useState<ClientHistoryResponse | null>(null)
+  const [selectedMac, setSelectedMac] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -108,10 +110,19 @@ export default function Page() {
           onModeChange={setMode}
         />
 
-        <ClientsTable clients={current?.clients ?? []} />
+        <ClientsTable
+          clients={current?.clients ?? []}
+          onClientClick={(c) => setSelectedMac(c.mac)}
+        />
 
         <Footer />
       </main>
+
+      {selectedMac && (() => {
+        const live = current?.clients.find((c) => c.mac === selectedMac)
+        if (!live) return null
+        return <ClientModal client={live} onClose={() => setSelectedMac(null)} />
+      })()}
     </div>
   )
 }

@@ -1,7 +1,10 @@
 import { formatBytes, formatRate } from "@/lib/format"
 import type { Client } from "@/lib/types"
 
-type Props = { clients: Client[] }
+type Props = {
+  clients: Client[]
+  onClientClick?: (client: Client) => void
+}
 
 const BAND: Record<Client["connType"], { label: string; cls: string; mark: string }> = {
   host_2g: { label: "2.4 GHz", cls: "text-amber-300/80",  mark: "▪" },
@@ -9,7 +12,7 @@ const BAND: Record<Client["connType"], { label: string; cls: string; mark: strin
   wired:   { label: "Wired",   cls: "text-zinc-400",       mark: "▪" },
 }
 
-export function ClientsTable({ clients }: Props) {
+export function ClientsTable({ clients, onClientClick }: Props) {
   if (clients.length === 0) {
     return (
       <Section title="Clients" count={0}>
@@ -31,10 +34,24 @@ export function ClientsTable({ clients }: Props) {
         {sorted.map((c) => {
           const band = BAND[c.connType]
           const pct = max > 0 ? Math.min(100, ((c.bandwidth ?? 0) / max) * 100) : 0
+          const clickable = !!onClientClick
           return (
             <div
               key={c.mac}
-              className="grid grid-cols-[1fr_auto_auto_auto] gap-x-6 px-5 py-3 text-sm hover:bg-white/[0.02] transition-colors"
+              className={`grid grid-cols-[1fr_auto_auto_auto] gap-x-6 px-5 py-3 text-sm hover:bg-white/[0.02] transition-colors ${clickable ? "cursor-pointer" : ""}`}
+              role={clickable ? "button" : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              onClick={clickable ? () => onClientClick!(c) : undefined}
+              onKeyDown={
+                clickable
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault()
+                        onClientClick!(c)
+                      }
+                    }
+                  : undefined
+              }
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
