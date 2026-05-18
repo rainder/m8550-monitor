@@ -1,10 +1,9 @@
 """Web Push (VAPID) helpers — auto-managed key pair and dispatch.
 
-A single JSON file at ``vapid_path`` holds both the public and private
-VAPID keys plus the contact subject. The collector generates the file
-on first run and the web service reads the public key from it; bind-
-mounting ``/data`` into both containers lets them share without an env
-var ceremony.
+The JSON file at ``vapid_path`` holds the public and private VAPID keys
+(crypto material that must persist). The contact ``subject`` is runtime
+config — read fresh from env on each start so it can be changed without
+rotating keys.
 """
 from __future__ import annotations
 
@@ -27,24 +26,23 @@ class VapidKeys:
 
 
 def load_or_create_vapid(vapid_path: str, subject: str) -> VapidKeys:
-    """Read keys from ``vapid_path`` or generate a fresh pair and persist."""
+    """Read keys from ``vapid_path`` or generate a fresh pair and persist.
+
+    ``subject`` always comes from the caller (env) so it can be changed
+    later without rotating keys. A legacy ``subject`` key in the JSON is
+    ignored.
+    """
     p = Path(vapid_path)
     if p.exists():
         data = json.loads(p.read_text())
-        return VapidKeys(
-            public=data["public"], private=data["private"],
-            subject=data.get("subject", subject),
-        )
+        return VapidKeys(public=data["public"], private=data["private"], subject=subject)
     keys = _generate_vapid_keys(subject)
     p.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write so we never half-write a key file.
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".vapid.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(
-                {"public": keys.public, "private": keys.private, "subject": keys.subject},
-                f,
-            )
+            json.dump({"public": keys.public, "private": keys.private}, f)
         os.chmod(tmp, 0o600)
         os.replace(tmp, p)
     except Exception:
