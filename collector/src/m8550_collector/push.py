@@ -30,27 +30,47 @@ def load_or_create_vapid(vapid_path: str, subject: str) -> VapidKeys:
 
     ``subject`` always comes from the caller (env) so it can be changed
     later without rotating keys. A legacy ``subject`` key in the JSON is
-    ignored.
+    ignored. Legacy PEM-formatted private keys are migrated in place to
+    raw base64 (which pywebpush's ``Vapid.from_string`` accepts directly).
     """
     p = Path(vapid_path)
     if p.exists():
         data = json.loads(p.read_text())
-        return VapidKeys(public=data["public"], private=data["private"], subject=subject)
+        priv_raw = _ensure_raw_private_key(data["private"])
+        if priv_raw != data["private"]:
+            log.info("migrating legacy PEM private key to raw base64 at %s", p)
+            _atomic_write_keys(p, {"public": data["public"], "private": priv_raw})
+        return VapidKeys(public=data["public"], private=priv_raw, subject=subject)
     keys = _generate_vapid_keys(subject)
     p.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic write so we never half-write a key file.
+    _atomic_write_keys(p, {"public": keys.public, "private": keys.private})
+    log.info("generated new VAPID key pair at %s", p)
+    return keys
+
+
+def _atomic_write_keys(p: Path, data: dict) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".vapid.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump({"public": keys.public, "private": keys.private}, f)
+            json.dump(data, f)
         os.chmod(tmp, 0o600)
         os.replace(tmp, p)
     except Exception:
         try: os.unlink(tmp)
         except OSError: pass
         raise
-    log.info("generated new VAPID key pair at %s", p)
-    return keys
+
+
+def _ensure_raw_private_key(private: str) -> str:
+    """Return the private key as URL-safe base64 of the 32-byte raw value.
+    Accepts that exact form (passthrough) or PEM (one-time conversion)."""
+    if not private.startswith("-----"):
+        return private
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    from py_vapid.utils import b64urlencode
+    key = load_pem_private_key(private.encode("ascii"), password=None)
+    priv_int = key.private_numbers().private_value  # type: ignore[attr-defined]
+    return b64urlencode(priv_int.to_bytes(32, byteorder="big"))
 
 
 def _generate_vapid_keys(subject: str) -> VapidKeys:
@@ -59,18 +79,16 @@ def _generate_vapid_keys(subject: str) -> VapidKeys:
     from py_vapid.utils import b64urlencode
 
     priv = ec.generate_private_key(ec.SECP256R1())
-    priv_pem = priv.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode("ascii")
+    # Store as the raw 32-byte private value, url-safe base64 (no padding).
+    # pywebpush's Vapid.from_string takes this form natively.
+    priv_raw = priv.private_numbers().private_value.to_bytes(32, byteorder="big")
     # Web Push's "applicationServerKey" is the raw P-256 public key,
     # 65 bytes uncompressed, url-safe base64 with no padding.
     pub_bytes = priv.public_key().public_bytes(
         encoding=serialization.Encoding.X962,
         format=serialization.PublicFormat.UncompressedPoint,
     )
-    return VapidKeys(public=b64urlencode(pub_bytes), private=priv_pem, subject=subject)
+    return VapidKeys(public=b64urlencode(pub_bytes), private=b64urlencode(priv_raw), subject=subject)
 
 
 @dataclass(frozen=True)
