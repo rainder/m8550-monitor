@@ -42,6 +42,20 @@ export interface CurrentResponse {
   ageSeconds: number   // server time - sample.ts; 0 when no sample
 }
 
+export interface SmsMessage {
+  id: number
+  sender: string
+  content: string
+  receivedAt: number   // unix seconds (UTC)
+  unread: boolean
+}
+
+export interface SmsResponse {
+  unreadCount: number
+  messages: SmsMessage[]
+  syncedAt: number     // when the collector last refreshed the inbox; 0 if never
+}
+
 export type HistoryRange = "1h" | "24h" | "7d"
 
 export interface HistoryPoint {

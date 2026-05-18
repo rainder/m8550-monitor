@@ -10,6 +10,7 @@ class Config:
     poll_interval: int
     auth_backoff_seconds: int
     stale_session_threshold: int
+    sms_poll_interval: int
 
 
 def load_config() -> Config:
@@ -20,4 +21,5 @@ def load_config() -> Config:
         poll_interval=int(os.environ.get("POLL_INTERVAL", "5")),
         auth_backoff_seconds=int(os.environ.get("AUTH_BACKOFF_SECONDS", "300")),
         stale_session_threshold=int(os.environ.get("STALE_SESSION_THRESHOLD", "4")),
+        sms_poll_interval=int(os.environ.get("SMS_POLL_INTERVAL", "60")),
     )

@@ -30,7 +30,9 @@ def main() -> int:
         auth_backoff_seconds=cfg.auth_backoff_seconds,
         stale_session_threshold=cfg.stale_session_threshold,
     )
-    Poller(router, store).run_forever(cfg.poll_interval)
+    Poller(
+        router, store, sms_poll_interval=cfg.sms_poll_interval,
+    ).run_forever(cfg.poll_interval)
     return 0
 
 

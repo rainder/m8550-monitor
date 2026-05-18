@@ -17,11 +17,14 @@ class Poller:
         store: Store,
         now: Callable[[], int] = lambda: int(time.time()),
         max_gap_seconds: int = 10,
+        sms_poll_interval: int = 60,
     ):
         self.router = router
         self.store = store
         self.now = now
         self.max_gap_seconds = max_gap_seconds
+        self.sms_poll_interval = sms_poll_interval
+        self._last_sms_fetch_ts = 0
 
     def tick(self) -> None:
         ts = self.now()
@@ -76,6 +79,20 @@ class Poller:
             })
 
         self.store.append_clients(ts=ts, clients=client_rows)
+
+        # SMS — refresh on a slower cadence than the rate poll.
+        if (
+            self.sms_poll_interval > 0
+            and ts - self._last_sms_fetch_ts >= self.sms_poll_interval
+        ):
+            try:
+                messages = self.router.list_sms()
+                self.store.replace_sms(ts=ts, messages=messages)
+                self._last_sms_fetch_ts = ts
+            except (AuthError, ConnectionError) as e:
+                log.warning("sms fetch skipped: %s", e)
+            except Exception:
+                log.exception("sms fetch failed")
 
     def run_forever(self, interval: int) -> None:
         """Poll forever. Use a longer sleep when the router is unreachable."""

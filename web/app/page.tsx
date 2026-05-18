@@ -5,12 +5,16 @@ import { useEffect, useState } from "react"
 import { ClientModal } from "@/components/client-modal"
 import { ClientsTable } from "@/components/clients-table"
 import { SignalPanel } from "@/components/signal-panel"
+import { SmsPanel } from "@/components/sms-panel"
 import { StatCard } from "@/components/stat-card"
 import { StatusIndicator } from "@/components/status-indicator"
 import { SystemGauges } from "@/components/system-gauges"
 import { TrafficChart } from "@/components/traffic-chart"
 import { formatBytes, formatRelative } from "@/lib/format"
-import type { ClientHistoryResponse, CurrentResponse, HistoryMode, HistoryRange, HistoryResponse } from "@/lib/types"
+import type {
+  ClientHistoryResponse, CurrentResponse, HistoryMode, HistoryRange,
+  HistoryResponse, SmsResponse,
+} from "@/lib/types"
 
 const POLL_MS = 5000
 const SPARK_WINDOW = 24 // last N history points feed the stat-card sparklines
@@ -22,6 +26,7 @@ export default function Page() {
   const [mode, setMode] = useState<HistoryMode>("wan")
   const [clientHistory, setClientHistory] = useState<ClientHistoryResponse | null>(null)
   const [selectedMac, setSelectedMac] = useState<string | null>(null)
+  const [sms, setSms] = useState<SmsResponse | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -52,6 +57,19 @@ export default function Page() {
     const id = setInterval(load, POLL_MS * 2)
     return () => { cancelled = true; clearInterval(id) }
   }, [range])
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const r = await fetch("/api/sms", { cache: "no-store" })
+        if (!cancelled && r.ok) setSms(await r.json())
+      } catch { /* ignore */ }
+    }
+    load()
+    const id = setInterval(load, POLL_MS * 6) // SMS refreshes server-side every ~60s
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
 
   useEffect(() => {
     if (mode !== "clients") return
@@ -85,6 +103,7 @@ export default function Page() {
           clientCount={clientCount}
           cpuPct={sample?.cpuPct ?? null}
           memPct={sample?.memPct ?? null}
+          smsUnread={sms?.unreadCount ?? 0}
         />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -115,6 +134,14 @@ export default function Page() {
           onClientClick={(c) => setSelectedMac(c.mac)}
         />
 
+        {sms && (
+          <SmsPanel
+            messages={sms.messages}
+            unreadCount={sms.unreadCount}
+            syncedAt={sms.syncedAt}
+          />
+        )}
+
         <Footer />
       </main>
 
@@ -128,13 +155,14 @@ export default function Page() {
 }
 
 function Header({
-  online, ageSeconds, clientCount, cpuPct, memPct,
+  online, ageSeconds, clientCount, cpuPct, memPct, smsUnread,
 }: {
   online: boolean
   ageSeconds: number
   clientCount: number
   cpuPct: number | null
   memPct: number | null
+  smsUnread: number
 }) {
   return (
     <header className="flex items-center justify-between border-b border-[var(--color-border)] pb-5">
@@ -156,6 +184,7 @@ function Header({
       <div className="flex items-center gap-5">
         <SystemGauges cpuPct={cpuPct} memPct={memPct} />
         <Metric label="Clients" value={String(clientCount)} />
+        {smsUnread > 0 && <Metric label="SMS" value={`${smsUnread} new`} accent />}
         <Metric label="Updated" value={formatRelative(ageSeconds)} />
         <StatusIndicator online={online} ageSeconds={ageSeconds} />
       </div>
@@ -163,11 +192,13 @@ function Header({
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
     <div className="hidden sm:flex items-center gap-2 text-[11px] font-mono">
       <span className="uppercase tracking-wider text-zinc-600">{label}</span>
-      <span className="text-zinc-300 tabular-nums">{value}</span>
+      <span className={`tabular-nums ${accent ? "text-emerald-300" : "text-zinc-300"}`}>
+        {value}
+      </span>
     </div>
   )
 }

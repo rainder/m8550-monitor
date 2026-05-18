@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS clients (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clients_ts ON clients(ts);
+
+CREATE TABLE IF NOT EXISTS sms_messages (
+    id           INTEGER PRIMARY KEY,
+    sender       TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    received_at  INTEGER NOT NULL,
+    unread       INTEGER NOT NULL,
+    synced_at    INTEGER NOT NULL
+);
 """
 
 
@@ -140,6 +149,39 @@ class Store:
                 ")"
             ).fetchall()
             return {mac: (ts, total) for mac, ts, total in rows}
+
+    def replace_sms(self, ts: int, messages) -> None:
+        """Full-mirror the router's inbox: replace our cached rows so deleted
+        messages disappear and unread/content edits apply."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sms_messages")
+            conn.executemany(
+                "INSERT INTO sms_messages "
+                "(id, sender, content, received_at, unread, synced_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (m.id, m.sender, m.content, m.received_at, int(m.unread), ts)
+                    for m in messages
+                ],
+            )
+
+    def list_sms(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, sender, content, received_at, unread, synced_at "
+                "FROM sms_messages ORDER BY received_at DESC, id DESC"
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "sender": r[1],
+                "content": r[2],
+                "received_at": r[3],
+                "unread": bool(r[4]),
+                "synced_at": r[5],
+            }
+            for r in rows
+        ]
 
     def latest_sample(self) -> dict | None:
         with self._connect() as conn:

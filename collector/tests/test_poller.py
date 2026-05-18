@@ -3,7 +3,9 @@ import sqlite3
 import pytest
 
 from m8550_collector.poller import Poller
-from m8550_collector.router import AuthError, RouterSnapshot, RouterClientSnapshot, WanStatus
+from m8550_collector.router import (
+    AuthError, RouterSnapshot, RouterClientSnapshot, SmsMessage, WanStatus,
+)
 from m8550_collector.store import Store
 
 
@@ -19,8 +21,10 @@ def _wan_idle() -> WanStatus:
 
 
 class FakeRouter:
-    def __init__(self, snapshots):
+    def __init__(self, snapshots, sms=None):
         self.snapshots = list(snapshots)
+        self.sms = sms if sms is not None else []
+        self.sms_calls = 0
 
     def snapshot(self):
         if not self.snapshots:
@@ -29,6 +33,12 @@ class FakeRouter:
         if isinstance(s, Exception):
             raise s
         return s
+
+    def list_sms(self):
+        self.sms_calls += 1
+        if isinstance(self.sms, Exception):
+            raise self.sms
+        return list(self.sms)
 
 
 def _store(tmp_path):
@@ -216,6 +226,74 @@ def test_connection_error_writes_offline_row(tmp_path):
     conn = sqlite3.connect(store.path)
     count = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
     assert count == 0  # no clients written when router unreachable
+
+
+def test_poller_fetches_sms_on_first_tick(tmp_path):
+    store = _store(tmp_path)
+    sms = [
+        SmsMessage(id=8, sender="LABAS", content="hi", received_at=1700, unread=False),
+        SmsMessage(id=9, sender="SHORT", content="unread one", received_at=1800, unread=True),
+    ]
+    router = FakeRouter(
+        [RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                        wan_status=_wan_idle(), clients=[], sms_unread_count=1)],
+        sms=sms,
+    )
+    p = Poller(router, store, now=lambda: 100, sms_poll_interval=60)
+    p.tick()
+
+    rows = store.list_sms()
+    assert [(r["id"], r["sender"], r["unread"]) for r in rows] == [
+        (9, "SHORT", True), (8, "LABAS", False),  # sorted DESC by received_at
+    ]
+    assert router.sms_calls == 1
+
+
+def test_poller_skips_sms_until_interval_elapses(tmp_path):
+    store = _store(tmp_path)
+    router = FakeRouter(
+        [
+            RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                           wan_status=_wan_idle(), clients=[]),
+            RouterSnapshot(total_bytes=2, rx_rate=0, tx_rate=0,
+                           wan_status=_wan_idle(), clients=[]),
+            RouterSnapshot(total_bytes=3, rx_rate=0, tx_rate=0,
+                           wan_status=_wan_idle(), clients=[]),
+        ],
+        sms=[SmsMessage(id=1, sender="X", content="", received_at=0, unread=False)],
+    )
+    clock = iter([100, 130, 165])
+    p = Poller(router, store, now=lambda: next(clock), sms_poll_interval=60)
+    p.tick()  # 100 — first ever, fetch
+    p.tick()  # 130 — only 30s elapsed, skip
+    p.tick()  # 165 — 65s since first fetch, fetch
+    assert router.sms_calls == 2
+
+
+def test_poller_sms_disabled_when_interval_zero(tmp_path):
+    store = _store(tmp_path)
+    router = FakeRouter(
+        [RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                        wan_status=_wan_idle(), clients=[])],
+        sms=[SmsMessage(id=1, sender="X", content="", received_at=0, unread=False)],
+    )
+    p = Poller(router, store, now=lambda: 100, sms_poll_interval=0)
+    p.tick()
+    assert router.sms_calls == 0
+    assert store.list_sms() == []
+
+
+def test_poller_sms_fetch_failure_does_not_kill_tick(tmp_path):
+    store = _store(tmp_path)
+    router = FakeRouter(
+        [RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                        wan_status=_wan_idle(), clients=[])],
+        sms=ConnectionError("router blip"),
+    )
+    p = Poller(router, store, now=lambda: 100, sms_poll_interval=60)
+    p.tick()  # must not raise; main sample still recorded
+    sample = store.latest_sample()
+    assert sample is not None and sample["online"] is True
 
 
 def test_poller_persists_wan_status(tmp_path):

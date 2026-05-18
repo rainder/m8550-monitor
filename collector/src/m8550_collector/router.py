@@ -52,6 +52,17 @@ class RouterSnapshot:
     tx_rate: int | None        # WAN bytes/sec up (cur_tx_speed)
     wan_status: WanStatus
     clients: list[RouterClientSnapshot]
+    sms_unread_count: int | None = None
+
+
+@dataclass(frozen=True)
+class SmsMessage:
+    """One SMS in the router's inbox."""
+    id: int                  # router-side index field; stable across polls
+    sender: str
+    content: str
+    received_at: int         # unix seconds (UTC)
+    unread: bool
 
 
 class RouterClient(Protocol):
@@ -60,6 +71,10 @@ class RouterClient(Protocol):
 
         Raises ConnectionError on unreachable, AuthError on bad credentials.
         """
+        ...
+
+    def list_sms(self) -> list[SmsMessage]:
+        """Return the router's SMS inbox. May raise the same exceptions as snapshot()."""
         ...
 
 
@@ -90,6 +105,20 @@ def _safe_int(v) -> int | None:
 def _safe_float(v) -> float | None:
     try:
         return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_received_time(s) -> int | None:
+    """Router returns local-tz strings like "2026-02-20 16:01:19". Treat as UTC
+    since the router clock is its own beast; the consumer can format with
+    its own offset if needed. Returns None on parse failure."""
+    if not s:
+        return None
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.strptime(str(s), "%Y-%m-%d %H:%M:%S")
+        return int(dt.replace(tzinfo=timezone.utc).timestamp())
     except (TypeError, ValueError):
         return None
 
@@ -227,7 +256,45 @@ class LibRouterClient:
             tx_rate=int(lte.cur_tx_speed) if lte.cur_tx_speed is not None else None,
             wan_status=wan_status,
             clients=clients,
+            sms_unread_count=_safe_int(getattr(lte, "sms_unread_count", None)),
         )
+
+    def list_sms(self) -> list["SmsMessage"]:
+        """Fetch the inbox. M8550 uses DEV2_-prefixed variants of the OIDs
+        the MR client uses; the SET+GL pair returns one message page."""
+        acts = [
+            self._lib.ActItem(
+                self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX", attrs=["PageNumber=1"],
+            ),
+            self._lib.ActItem(
+                self._lib.ActItem.GL, "DEV2_LTE_SMS_RECVMSGENTRY",
+                attrs=["index", "from", "content", "receivedTime", "unread"],
+            ),
+        ]
+        try:
+            _, values = self._lib.req_act(acts)
+        except OSError as e:
+            raise ConnectionError(str(e)) from e
+        if not values or not values[0]:
+            return []
+        out: list[SmsMessage] = []
+        for row in values[0]:
+            if not isinstance(row, dict):
+                continue
+            idx = _safe_int(row.get("index"))
+            if idx is None:
+                continue
+            received_at = _parse_received_time(row.get("receivedTime"))
+            if received_at is None:
+                continue
+            out.append(SmsMessage(
+                id=idx,
+                sender=str(row.get("from") or ""),
+                content=str(row.get("content") or ""),
+                received_at=received_at,
+                unread=str(row.get("unread") or "0") == "1",
+            ))
+        return out
 
     def _fetch_all(self):
         lte = self._lib.get_lte_status()

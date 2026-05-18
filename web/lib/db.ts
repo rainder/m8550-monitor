@@ -1,6 +1,6 @@
 import Database from "better-sqlite3"
 
-import type { Client, HistoryPoint, Sample } from "./types"
+import type { Client, HistoryPoint, Sample, SmsMessage } from "./types"
 
 let db: Database.Database | null = null
 
@@ -134,4 +134,38 @@ export function clientHistorySince(sinceTs: number): ClientHistoryRow[] {
       "WHERE ts >= ? ORDER BY ts ASC, mac ASC",
     )
     .all(sinceTs) as ClientHistoryRow[]
+}
+
+interface SmsRow {
+  id: number
+  sender: string
+  content: string
+  received_at: number
+  unread: number
+  synced_at: number
+}
+
+export function listSms(): { messages: SmsMessage[]; syncedAt: number } {
+  // sms_messages didn't exist in older databases; tolerate that and report empty.
+  const db = getDb()
+  const exists = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sms_messages'")
+    .get()
+  if (!exists) return { messages: [], syncedAt: 0 }
+
+  const rows = db
+    .prepare(
+      "SELECT id, sender, content, received_at, unread, synced_at FROM sms_messages " +
+      "ORDER BY received_at DESC, id DESC",
+    )
+    .all() as SmsRow[]
+  const messages = rows.map((r) => ({
+    id: r.id,
+    sender: r.sender,
+    content: r.content,
+    receivedAt: r.received_at,
+    unread: r.unread === 1,
+  }))
+  const syncedAt = rows.length ? rows[0].synced_at : 0
+  return { messages, syncedAt }
 }
