@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 
+import { SmsModal } from "@/components/sms-modal"
 import type { SmsMessage } from "@/lib/types"
 
 type Props = {
@@ -11,33 +12,53 @@ type Props = {
 }
 
 export function SmsPanel({ messages, unreadCount, syncedAt }: Props) {
+  const [openId, setOpenId] = useState<number | null>(null)
+
   if (syncedAt === 0 && messages.length === 0) {
     // Never synced yet — silently hide so old DBs don't render an empty section.
     return null
   }
+
+  const open = openId !== null ? messages.find((m) => m.id === openId) ?? null : null
+
   return (
-    <Section count={messages.length} unreadCount={unreadCount}>
-      {messages.length === 0 ? (
-        <div className="px-5 py-8 text-center text-xs text-zinc-500 font-mono">
-          Inbox empty
-        </div>
-      ) : (
-        <ul className="divide-y divide-[var(--color-border)]">
-          {messages.map((m) => (
-            <SmsRow key={m.id} message={m} />
-          ))}
-        </ul>
-      )}
-    </Section>
+    <>
+      <Section count={messages.length} unreadCount={unreadCount}>
+        {messages.length === 0 ? (
+          <div className="px-5 py-8 text-center text-xs text-zinc-500 font-mono">
+            Inbox empty
+          </div>
+        ) : (
+          <ul className="divide-y divide-[var(--color-border)]">
+            {messages.map((m) => (
+              <SmsRow
+                key={m.id}
+                message={m}
+                onClick={() => setOpenId(m.id)}
+              />
+            ))}
+          </ul>
+        )}
+      </Section>
+      {open && <SmsModal message={open} onClose={() => setOpenId(null)} />}
+    </>
   )
 }
 
-function SmsRow({ message }: { message: SmsMessage }) {
-  const [expanded, setExpanded] = useState(false)
-  const preview = previewOf(message.content)
-  const showToggle = message.content.length > preview.length
+function SmsRow({ message, onClick }: { message: SmsMessage; onClick: () => void }) {
   return (
-    <li className="px-5 py-3 text-sm transition-colors hover:bg-white/[0.02]">
+    <li
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onClick()
+        }
+      }}
+      className="px-5 py-3 text-sm cursor-pointer transition-colors hover:bg-white/[0.02] focus:outline-none focus:bg-white/[0.04]"
+    >
       <div className="flex items-baseline justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           {message.unread && (
@@ -54,17 +75,8 @@ function SmsRow({ message }: { message: SmsMessage }) {
           {formatReceivedAt(message.receivedAt)}
         </span>
       </div>
-      <div className="mt-1 text-[12px] text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-        {expanded ? message.content : preview}
-        {showToggle && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="ml-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500 hover:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-500 rounded px-1"
-          >
-            {expanded ? "less" : "more"}
-          </button>
-        )}
+      <div className="mt-1 text-[12px] text-zinc-400 leading-relaxed line-clamp-2 break-words">
+        {message.content}
       </div>
     </li>
   )
@@ -97,11 +109,6 @@ function Section({
       {children}
     </div>
   )
-}
-
-function previewOf(content: string): string {
-  if (content.length <= 140) return content
-  return content.slice(0, 140) + "…"
 }
 
 function formatReceivedAt(seconds: number): string {
