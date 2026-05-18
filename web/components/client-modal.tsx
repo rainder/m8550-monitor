@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { Sparkline } from "@/components/sparkline"
 import { formatBytes, formatRate } from "@/lib/format"
@@ -25,6 +25,9 @@ const BAND_ACCENT: Record<Client["connType"], string> = {
 
 export function ClientModal({ client, onClose }: Props) {
   const series = useClientSeries(client.mac)
+  const trimmed = series === null ? null : trimLeadingNulls(series)
+  const chartRef = useRef<HTMLDivElement>(null)
+  const chartWidth = useElementWidth(chartRef)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -81,30 +84,34 @@ export function ClientModal({ client, onClose }: Props) {
         <div className="border-t border-[var(--color-border)] px-5 py-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-mono">
-              Bandwidth · 1h
+              Bandwidth · {trimmed ? coverageLabel(trimmed.length) : "1h"}
             </span>
-            {series && series.length >= 2 && (
+            {trimmed && trimmed.length >= 2 && (
               <span className="text-[10px] font-mono text-zinc-500 tabular-nums">
-                peak {formatRate(peakOf(series))}
+                peak {formatRate(peakOf(trimmed))}
               </span>
             )}
           </div>
-          {series === null ? (
-            <div className="h-14 flex items-center text-[11px] font-mono text-zinc-600">
-              Loading…
-            </div>
-          ) : series.length < 2 ? (
-            <div className="h-14 flex items-center text-[11px] font-mono text-zinc-600">
-              Not enough history yet
-            </div>
-          ) : (
-            <Sparkline
-              values={series}
-              stroke="#34d399"
-              width={400}
-              height={56}
-            />
-          )}
+          <div ref={chartRef} className="w-full">
+            {trimmed === null ? (
+              <div className="h-14 flex items-center text-[11px] font-mono text-zinc-600">
+                Loading…
+              </div>
+            ) : trimmed.length < 2 ? (
+              <div className="h-14 flex items-center text-[11px] font-mono text-zinc-600">
+                Not enough history yet
+              </div>
+            ) : chartWidth === 0 ? (
+              <div className="h-14" />
+            ) : (
+              <Sparkline
+                values={trimmed}
+                stroke="#34d399"
+                width={chartWidth}
+                height={56}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -131,6 +138,39 @@ function peakOf(values: (number | null)[]): number | null {
     if (max === null || v > max) max = v
   }
   return max
+}
+
+/** Drop leading nulls so the line starts at the left edge of the chart. */
+function trimLeadingNulls(values: (number | null)[]): (number | null)[] {
+  let i = 0
+  while (i < values.length && values[i] === null) i++
+  return i === 0 ? values : values.slice(i)
+}
+
+/** Label the timespan covered by `points` ticks (ticks are 5-min apart for 1h range). */
+function coverageLabel(points: number): string {
+  // 1h history endpoint returns ~12 ticks (every 5 min). Estimate minutes.
+  const totalTicks = 12
+  const minutes = Math.round((points / totalTicks) * 60)
+  if (minutes >= 60) return "1h"
+  if (minutes < 1) return "<1m"
+  return `${minutes}m`
+}
+
+/** Track an element's current pixel width via ResizeObserver. Returns 0 until first measured. */
+function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setWidth(el.clientWidth)
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setWidth(entry.contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref])
+  return width
 }
 
 /** Fetches 1h client-history for the given MAC. `null` while loading, `[]` when not found. */
