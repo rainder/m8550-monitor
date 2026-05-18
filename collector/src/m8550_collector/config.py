@@ -9,6 +9,7 @@ class Config:
     db_path: str
     poll_interval: int
     auth_backoff_seconds: int
+    stale_session_threshold: int
 
 
 def load_config() -> Config:
@@ -18,4 +19,5 @@ def load_config() -> Config:
         db_path=os.environ["DB_PATH"],
         poll_interval=int(os.environ.get("POLL_INTERVAL", "5")),
         auth_backoff_seconds=int(os.environ.get("AUTH_BACKOFF_SECONDS", "300")),
+        stale_session_threshold=int(os.environ.get("STALE_SESSION_THRESHOLD", "4")),
     )

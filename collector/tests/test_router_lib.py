@@ -145,7 +145,7 @@ def test_snapshot_oserror_also_raises_connection_error():
     fake_lib = MagicMock()
     fake_lib.get_lte_status.side_effect = OSError("connection refused")
 
-    client = LibRouterClient(_lib=fake_lib)
+    client = LibRouterClient(_lib=fake_lib, stale_session_threshold=99)
     with pytest.raises(ConnectionError):
         client.snapshot()
 
@@ -237,6 +237,98 @@ def test_snapshot_reclaims_session_after_backoff_elapses():
     assert snap.total_bytes == 100
     fake_lib.authorize.assert_called_once()
     assert client._kicked_until is None
+
+
+def test_repeated_oserrors_trigger_self_heal_reauth():
+    """Some session kicks surface as TCP resets (OSError) rather than 401s.
+    After ``stale_session_threshold`` consecutive ConnectionErrors the
+    client tries one re-auth+refetch to self-heal a stuck session.
+    """
+    fake_lib = MagicMock()
+
+    lte = MagicMock()
+    lte.total_statistics = 1; lte.cur_rx_speed = 0; lte.cur_tx_speed = 0
+    lte.sig_level = 4; lte.isp_name = "Bite"
+    status = MagicMock()
+    status.devices = []; status.cpu_usage = 0; status.mem_usage = 0
+
+    # Three OSErrors, then on the fourth call the threshold triggers
+    # reauth + refetch which both succeed.
+    fake_lib.get_lte_status.side_effect = [
+        OSError("reset"), OSError("reset"), OSError("reset"),
+        OSError("reset"),  # triggers reauth path
+        lte,                # refetch after reauth succeeds
+    ]
+    fake_lib.get_status.return_value = status
+    fake_lib.ActItem = MagicMock(); fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.return_value = ("raw", [[]])
+
+    client = LibRouterClient(
+        _lib=fake_lib, stale_session_threshold=4, auth_backoff_seconds=300,
+    )
+
+    for _ in range(3):
+        with pytest.raises(ConnectionError):
+            client.snapshot()
+    fake_lib.authorize.assert_not_called()
+
+    snap = client.snapshot()
+    assert snap.total_bytes == 1
+    fake_lib.authorize.assert_called_once()
+    # Counter reset after success.
+    assert client._consecutive_oserrors == 0
+
+
+def test_self_heal_reauth_failure_arms_auth_backoff():
+    """If the threshold-triggered reauth attempt itself fails, fall back
+    to the same 5-minute auth backoff the session-kick path uses."""
+    fake_lib = MagicMock()
+    fake_lib.get_lte_status.side_effect = OSError("reset")
+    fake_lib.authorize.side_effect = Exception("router refusing auth")
+
+    client = LibRouterClient(
+        _lib=fake_lib,
+        stale_session_threshold=2,
+        auth_backoff_seconds=300,
+        _now=lambda: 1000,
+    )
+
+    with pytest.raises(ConnectionError):
+        client.snapshot()
+    with pytest.raises(AuthError) as exc:
+        client.snapshot()
+    assert exc.value.retry_after == 300
+    assert client._kicked_until == 1300
+    fake_lib.authorize.assert_called_once()
+
+
+def test_successful_snapshot_resets_oserror_counter():
+    """A successful poll between failures resets the threshold counter so
+    a new run of failures has to build up again."""
+    fake_lib = MagicMock()
+
+    lte = MagicMock()
+    lte.total_statistics = 1; lte.cur_rx_speed = 0; lte.cur_tx_speed = 0
+    lte.sig_level = 4; lte.isp_name = "Bite"
+    status = MagicMock()
+    status.devices = []; status.cpu_usage = 0; status.mem_usage = 0
+
+    fake_lib.get_lte_status.side_effect = [
+        OSError("reset"), OSError("reset"),
+        lte,  # success → counter resets
+        OSError("reset"),
+    ]
+    fake_lib.get_status.return_value = status
+    fake_lib.ActItem = MagicMock(); fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.return_value = ("raw", [[]])
+
+    client = LibRouterClient(_lib=fake_lib, stale_session_threshold=4)
+    with pytest.raises(ConnectionError): client.snapshot()
+    with pytest.raises(ConnectionError): client.snapshot()
+    client.snapshot()  # success
+    with pytest.raises(ConnectionError): client.snapshot()
+    # Reauth must NOT have triggered — the success reset the counter.
+    fake_lib.authorize.assert_not_called()
 
 
 def test_reauth_after_backoff_failure_re_arms_cooldown():

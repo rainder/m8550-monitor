@@ -16,8 +16,10 @@ def main() -> int:
 
     cfg = load_config()
     log.info(
-        "starting collector host=%s db=%s interval=%ds auth_backoff=%ds",
+        "starting collector host=%s db=%s interval=%ds auth_backoff=%ds "
+        "stale_session_threshold=%d",
         cfg.host, cfg.db_path, cfg.poll_interval, cfg.auth_backoff_seconds,
+        cfg.stale_session_threshold,
     )
 
     store = Store(cfg.db_path)
@@ -26,6 +28,7 @@ def main() -> int:
         host=cfg.host,
         password=cfg.password,
         auth_backoff_seconds=cfg.auth_backoff_seconds,
+        stale_session_threshold=cfg.stale_session_threshold,
     )
     Poller(router, store).run_forever(cfg.poll_interval)
     return 0

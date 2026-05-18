@@ -111,11 +111,14 @@ class LibRouterClient:
         _lib=None,
         *,
         auth_backoff_seconds: int = 300,
+        stale_session_threshold: int = 4,
         _now: Callable[[], int] = lambda: int(time.time()),
     ):
         self._auth_backoff_seconds = auth_backoff_seconds
+        self._stale_session_threshold = stale_session_threshold
         self._now = _now
         self._kicked_until: int | None = None
+        self._consecutive_oserrors = 0
         if _lib is not None:
             self._lib = _lib
             return
@@ -147,14 +150,36 @@ class LibRouterClient:
         try:
             lte, status, stat_rows = self._fetch_all()
         except OSError as e:
-            raise ConnectionError(str(e)) from e
+            # The M8550 doesn't always 401 a kicked session — sometimes it just
+            # resets the connection (RemoteDisconnected). Those look like
+            # network errors. Tolerate a few in a row as genuine transient
+            # blips; once the count hits the threshold the session is most
+            # likely stale and worth one reauth attempt.
+            self._consecutive_oserrors += 1
+            if self._consecutive_oserrors < self._stale_session_threshold:
+                raise ConnectionError(str(e)) from e
+            try:
+                self._lib.authorize()
+                lte, status, stat_rows = self._fetch_all()
+            except Exception as reauth_err:
+                self._kicked_until = now + self._auth_backoff_seconds
+                self._consecutive_oserrors = 0
+                raise AuthError(
+                    f"session reauth after {self._stale_session_threshold} "
+                    f"connection errors failed: {reauth_err}",
+                    retry_after=self._auth_backoff_seconds,
+                ) from reauth_err
+            self._consecutive_oserrors = 0
         except Exception as e:
             self._kicked_until = now + self._auth_backoff_seconds
+            self._consecutive_oserrors = 0
             raise AuthError(
                 f"session lost (likely Tether contention); backing off "
                 f"{self._auth_backoff_seconds}s: {e}",
                 retry_after=self._auth_backoff_seconds,
             ) from e
+        else:
+            self._consecutive_oserrors = 0
 
         clients: list[RouterClientSnapshot] = []
         for d in status.devices:
