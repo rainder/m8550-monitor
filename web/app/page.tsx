@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import { ClientModal } from "@/components/client-modal"
 import { ClientsTable } from "@/components/clients-table"
@@ -16,6 +16,7 @@ import type {
   ClientHistoryResponse, CurrentResponse, HistoryMode, HistoryRange,
   HistoryResponse, SmsResponse,
 } from "@/lib/types"
+import { usePolling } from "@/lib/use-polling"
 
 const POLL_MS = 5000
 const SPARK_WINDOW = 24 // last N history points feed the stat-card sparklines
@@ -29,62 +30,26 @@ export default function Page() {
   const [selectedMac, setSelectedMac] = useState<string | null>(null)
   const [sms, setSms] = useState<SmsResponse | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    async function poll() {
-      try {
-        const r = await fetch("/api/current", { cache: "no-store" })
-        if (!cancelled && r.ok) setCurrent(await r.json())
-      } catch {
-        /* keep last value on transient blip */
-      }
-    }
-    poll()
-    const id = setInterval(poll, POLL_MS)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  usePolling(async (signal) => {
+    const r = await fetch("/api/current", { cache: "no-store", signal })
+    if (r.ok) setCurrent(await r.json())
+  }, POLL_MS)
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const r = await fetch(`/api/history?range=${range}&mode=wan`, { cache: "no-store" })
-        if (!cancelled && r.ok) setHistory(await r.json())
-      } catch {
-        /* ignore */
-      }
-    }
-    load()
-    const id = setInterval(load, POLL_MS * 2)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [range])
+  usePolling(async (signal) => {
+    const r = await fetch(`/api/history?range=${range}&mode=wan`, { cache: "no-store", signal })
+    if (r.ok) setHistory(await r.json())
+  }, POLL_MS * 2, { triggerKey: range })
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const r = await fetch("/api/sms", { cache: "no-store" })
-        if (!cancelled && r.ok) setSms(await r.json())
-      } catch { /* ignore */ }
-    }
-    load()
-    const id = setInterval(load, POLL_MS * 6) // SMS refreshes server-side every ~60s
-    return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  // SMS refreshes server-side every ~60s
+  usePolling(async (signal) => {
+    const r = await fetch("/api/sms", { cache: "no-store", signal })
+    if (r.ok) setSms(await r.json())
+  }, POLL_MS * 6)
 
-  useEffect(() => {
-    if (mode !== "clients") return
-    let cancelled = false
-    async function load() {
-      try {
-        const r = await fetch(`/api/history?range=${range}&mode=clients`, { cache: "no-store" })
-        if (!cancelled && r.ok) setClientHistory(await r.json())
-      } catch { /* ignore */ }
-    }
-    load()
-    const id = setInterval(load, POLL_MS * 2)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [mode, range])
+  usePolling(async (signal) => {
+    const r = await fetch(`/api/history?range=${range}&mode=clients`, { cache: "no-store", signal })
+    if (r.ok) setClientHistory(await r.json())
+  }, POLL_MS * 2, { enabled: mode === "clients", triggerKey: range })
 
   const sample = current?.sample
   const online = sample?.online ?? false
