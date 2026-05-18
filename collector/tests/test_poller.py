@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from m8550_collector.poller import Poller
-from m8550_collector.router import RouterSnapshot, RouterClientSnapshot, WanStatus
+from m8550_collector.router import AuthError, RouterSnapshot, RouterClientSnapshot, WanStatus
 from m8550_collector.store import Store
 
 
@@ -180,6 +180,24 @@ def test_per_client_total_bytes_disappears_yields_null_bandwidth(tmp_path):
     conn = sqlite3.connect(store.path)
     row = conn.execute("SELECT bandwidth FROM clients WHERE ts = 105").fetchone()
     assert row == (None,)
+
+
+def test_auth_error_writes_offline_row(tmp_path):
+    """Session contention (kicked by Tether) shows as offline, same as
+    network unreachable — the dashboard's status pill flips to offline and
+    the collector stops trying for a while."""
+    store = _store(tmp_path)
+    router = FakeRouter([AuthError("kicked by tether", retry_after=300)])
+    p = Poller(router, store, now=lambda: 100)
+
+    p.tick()
+
+    sample = store.latest_sample()
+    assert sample == {
+        "ts": 100, "total_bytes": None,
+        "rx_rate": None, "tx_rate": None,
+        "online": False,
+    }
 
 
 def test_connection_error_writes_offline_row(tmp_path):

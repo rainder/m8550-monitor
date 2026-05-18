@@ -3,7 +3,7 @@ import time
 from typing import Callable
 
 from .rate import RateInputs, compute_rate
-from .router import RouterClient
+from .router import AuthError, RouterClient
 from .store import Store
 
 
@@ -27,6 +27,13 @@ class Poller:
         ts = self.now()
         try:
             snap = self.router.snapshot()
+        except AuthError as e:
+            log.warning("router auth: %s", e)
+            self.store.append_sample(
+                ts=ts, total_bytes=None,
+                rx_rate=None, tx_rate=None, online=False,
+            )
+            return
         except ConnectionError as e:
             log.warning("router unreachable: %s", e)
             self.store.append_sample(

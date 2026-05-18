@@ -1,5 +1,6 @@
+import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,10 @@ class RouterClient(Protocol):
 
 
 class AuthError(Exception):
-    pass
+    """Session is unusable due to contention (likely the Tether app)."""
+    def __init__(self, message: str, retry_after: int = 0):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 import logging
@@ -91,9 +95,27 @@ def _safe_float(v) -> float | None:
 
 
 class LibRouterClient:
-    """Adapter from tplinkrouterc6u (M8550 / TPLinkEXClient) to RouterClient."""
+    """Adapter from tplinkrouterc6u (M8550 / TPLinkEXClient) to RouterClient.
 
-    def __init__(self, host: str = "", password: str = "", _lib=None):
+    The M8550 allows exactly one logged-in session at a time. When the Tether
+    app logs in it invalidates ours, and re-authorising immediately would
+    just kick Tether back — a tug-of-war. Instead, when a fetch fails for a
+    non-network reason we treat the slot as contested and back off for
+    ``auth_backoff_seconds`` (default 5 minutes) before trying to reclaim it.
+    """
+
+    def __init__(
+        self,
+        host: str = "",
+        password: str = "",
+        _lib=None,
+        *,
+        auth_backoff_seconds: int = 300,
+        _now: Callable[[], int] = lambda: int(time.time()),
+    ):
+        self._auth_backoff_seconds = auth_backoff_seconds
+        self._now = _now
+        self._kicked_until: int | None = None
         if _lib is not None:
             self._lib = _lib
             return
@@ -104,17 +126,35 @@ class LibRouterClient:
         self._lib.authorize()
 
     def snapshot(self) -> RouterSnapshot:
-        try:
-            lte, status, stat_rows = self._fetch_all()
-        except (OSError, Exception) as first:
-            # Session likely expired (M8550 invalidates other sessions when
-            # the Tether app logs in, and ages out idle sessions). Re-auth
-            # and try once more before giving up.
+        now = self._now()
+        if self._kicked_until is not None:
+            if now < self._kicked_until:
+                remaining = self._kicked_until - now
+                raise AuthError(
+                    f"session contention backoff ({remaining}s remaining)",
+                    retry_after=remaining,
+                )
+            self._kicked_until = None
             try:
                 self._lib.authorize()
-                lte, status, stat_rows = self._fetch_all()
-            except Exception as retry:
-                raise ConnectionError(f"{first}; reauth retry: {retry}") from retry
+            except Exception as e:
+                self._kicked_until = now + self._auth_backoff_seconds
+                raise AuthError(
+                    f"reauth after backoff failed: {e}",
+                    retry_after=self._auth_backoff_seconds,
+                ) from e
+
+        try:
+            lte, status, stat_rows = self._fetch_all()
+        except OSError as e:
+            raise ConnectionError(str(e)) from e
+        except Exception as e:
+            self._kicked_until = now + self._auth_backoff_seconds
+            raise AuthError(
+                f"session lost (likely Tether contention); backing off "
+                f"{self._auth_backoff_seconds}s: {e}",
+                retry_after=self._auth_backoff_seconds,
+            ) from e
 
         clients: list[RouterClientSnapshot] = []
         for d in status.devices:

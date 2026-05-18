@@ -16,13 +16,17 @@ def main() -> int:
 
     cfg = load_config()
     log.info(
-        "starting collector host=%s db=%s interval=%ds",
-        cfg.host, cfg.db_path, cfg.poll_interval,
+        "starting collector host=%s db=%s interval=%ds auth_backoff=%ds",
+        cfg.host, cfg.db_path, cfg.poll_interval, cfg.auth_backoff_seconds,
     )
 
     store = Store(cfg.db_path)
     store.init_schema()
-    router = LibRouterClient(host=cfg.host, password=cfg.password)
+    router = LibRouterClient(
+        host=cfg.host,
+        password=cfg.password,
+        auth_backoff_seconds=cfg.auth_backoff_seconds,
+    )
     Poller(router, store).run_forever(cfg.poll_interval)
     return 0
 

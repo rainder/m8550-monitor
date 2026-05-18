@@ -9,6 +9,7 @@ services:
       - M8550_PASSWORD=${M8550_PASSWORD}
       - DB_PATH=/data/m8550.db
       - POLL_INTERVAL=${POLL_INTERVAL:-5}
+      - AUTH_BACKOFF_SECONDS=${AUTH_BACKOFF_SECONDS:-300}
     restart: unless-stopped
 
   web:

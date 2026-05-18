@@ -141,18 +141,6 @@ def test_snapshot_drops_inactive_devices():
     assert {c.mac for c in snap.clients} == {"AA:BB:CC:DD:EE:01"}
 
 
-def test_snapshot_unreachable_raises_connection_error():
-    """Library exceptions during data fetch surface as ConnectionError."""
-    from tplinkrouterc6u.common.exception import ClientException
-
-    fake_lib = MagicMock()
-    fake_lib.get_lte_status.side_effect = ClientException("boom")
-
-    client = LibRouterClient(_lib=fake_lib)
-    with pytest.raises(ConnectionError):
-        client.snapshot()
-
-
 def test_snapshot_oserror_also_raises_connection_error():
     fake_lib = MagicMock()
     fake_lib.get_lte_status.side_effect = OSError("connection refused")
@@ -162,10 +150,53 @@ def test_snapshot_oserror_also_raises_connection_error():
         client.snapshot()
 
 
-def test_snapshot_reauths_and_retries_on_first_failure():
-    """First call raises (session expired), authorize() is called, retry succeeds."""
+def test_snapshot_session_loss_triggers_auth_backoff_instead_of_reauth():
+    """A non-network fetch failure means our session was kicked (likely Tether).
+    The collector must NOT immediately re-authorise — that would just steal the
+    session back from Tether — it should raise AuthError and arm a cooldown.
+    """
     from tplinkrouterc6u.common.exception import ClientException
 
+    fake_lib = MagicMock()
+    fake_lib.get_lte_status.side_effect = ClientException("session lost")
+
+    clock = iter([1000, 1001])
+    client = LibRouterClient(
+        _lib=fake_lib, auth_backoff_seconds=300, _now=lambda: next(clock),
+    )
+    with pytest.raises(AuthError) as exc:
+        client.snapshot()
+    assert exc.value.retry_after == 300
+
+    # While the cooldown is active, snapshot() must short-circuit without
+    # touching the router at all.
+    fake_lib.reset_mock()
+    fake_lib.get_lte_status.side_effect = ClientException("would not be called")
+    with pytest.raises(AuthError) as exc:
+        client.snapshot()
+    assert exc.value.retry_after == 299
+    fake_lib.authorize.assert_not_called()
+    fake_lib.get_lte_status.assert_not_called()
+
+
+def test_snapshot_oserror_does_not_arm_auth_backoff():
+    """A socket-level failure is a network blip, not a session-kick. The
+    collector should report it as ConnectionError and keep polling normally."""
+    fake_lib = MagicMock()
+    fake_lib.get_lte_status.side_effect = OSError("connection refused")
+
+    client = LibRouterClient(_lib=fake_lib, auth_backoff_seconds=300)
+    with pytest.raises(ConnectionError):
+        client.snapshot()
+
+    # No cooldown armed — next snapshot would still try to fetch, not
+    # short-circuit with an AuthError.
+    assert client._kicked_until is None
+
+
+def test_snapshot_reclaims_session_after_backoff_elapses():
+    """After the cooldown window the collector re-authorises once and
+    resumes polling."""
     fake_lib = MagicMock()
 
     lte = MagicMock()
@@ -173,46 +204,57 @@ def test_snapshot_reauths_and_retries_on_first_failure():
     lte.cur_rx_speed = 50
     lte.cur_tx_speed = 25
     lte.sig_level = 4
-    lte.rsrp = -82
-    lte.rsrq = -10
-    lte.snr = 14
     lte.isp_name = "Bite"
+
     status = MagicMock()
     status.devices = []
-    status.cpu_usage = 0.59
-    status.mem_usage = 0.52
+    status.cpu_usage = 0.0
+    status.mem_usage = 0.0
 
-    # First call to get_lte_status raises (simulating a dropped session).
-    # After authorize(), the next call returns successfully.
+    from tplinkrouterc6u.common.exception import ClientException
     fake_lib.get_lte_status.side_effect = [
-        ClientException("session expired"),
-        lte,
+        ClientException("kicked"),  # first snapshot fails → arms backoff
+        lte,                         # reclaim succeeds
     ]
     fake_lib.get_status.return_value = status
     fake_lib.ActItem = MagicMock()
     fake_lib.ActItem.GL = "gl"
     fake_lib.req_act.return_value = ("raw", [[]])
 
-    client = LibRouterClient(_lib=fake_lib)
-    snap = client.snapshot()
+    # Clock: 1000 = first snapshot (kick), 1301 = past the 300s cooldown.
+    clock = iter([1000, 1301])
+    client = LibRouterClient(
+        _lib=fake_lib, auth_backoff_seconds=300, _now=lambda: next(clock),
+    )
 
-    assert snap.total_bytes == 100
-    assert snap.rx_rate == 50
-    fake_lib.authorize.assert_called_once()
-
-
-def test_snapshot_raises_when_reauth_retry_also_fails():
-    """If both the first call AND the reauth+retry fail, raise ConnectionError."""
-    from tplinkrouterc6u.common.exception import ClientException
-
-    fake_lib = MagicMock()
-    fake_lib.get_lte_status.side_effect = ClientException("still dead")
-
-    client = LibRouterClient(_lib=fake_lib)
-    with pytest.raises(ConnectionError):
+    with pytest.raises(AuthError):
         client.snapshot()
-    # authorize was attempted once, but the retry also failed.
+
+    # authorize was NOT called when we got kicked.
+    fake_lib.authorize.assert_not_called()
+
+    snap = client.snapshot()
+    assert snap.total_bytes == 100
     fake_lib.authorize.assert_called_once()
+    assert client._kicked_until is None
+
+
+def test_reauth_after_backoff_failure_re_arms_cooldown():
+    """If the reclaim re-auth still fails (Tether is still active), arm the
+    cooldown again instead of busy-looping."""
+    fake_lib = MagicMock()
+    fake_lib.get_lte_status.side_effect = Exception("never reached")
+    fake_lib.authorize.side_effect = [Exception("still kicked")]
+
+    client = LibRouterClient(
+        _lib=fake_lib, auth_backoff_seconds=300, _now=lambda: 2000,
+    )
+    client._kicked_until = 1000  # cooldown already elapsed
+
+    with pytest.raises(AuthError) as exc:
+        client.snapshot()
+    assert exc.value.retry_after == 300
+    assert client._kicked_until == 2300
 
 
 def test_snapshot_carries_wan_status():

@@ -8,6 +8,7 @@ def test_load_config_reads_env(monkeypatch):
     monkeypatch.setenv("M8550_PASSWORD", "secret")
     monkeypatch.setenv("DB_PATH", "/data/m8550.db")
     monkeypatch.setenv("POLL_INTERVAL", "5")
+    monkeypatch.setenv("AUTH_BACKOFF_SECONDS", "120")
 
     cfg = load_config()
 
@@ -16,6 +17,7 @@ def test_load_config_reads_env(monkeypatch):
         password="secret",
         db_path="/data/m8550.db",
         poll_interval=5,
+        auth_backoff_seconds=120,
     )
 
 
@@ -24,10 +26,12 @@ def test_load_config_default_interval(monkeypatch):
     monkeypatch.setenv("M8550_PASSWORD", "secret")
     monkeypatch.setenv("DB_PATH", "/data/m8550.db")
     monkeypatch.delenv("POLL_INTERVAL", raising=False)
+    monkeypatch.delenv("AUTH_BACKOFF_SECONDS", raising=False)
 
     cfg = load_config()
 
     assert cfg.poll_interval == 5
+    assert cfg.auth_backoff_seconds == 300
 
 
 def test_load_config_missing_password_raises(monkeypatch):
