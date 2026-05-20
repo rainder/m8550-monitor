@@ -443,3 +443,83 @@ def test_snapshot_includes_serving_cell_signal(monkeypatch):
     assert snap.wan_status.ss_sinr == 310
     assert snap.wan_status.nr_signal_strength == 4
     assert snap.wan_status.nr_band == "40"
+
+
+def test_list_sms_aggregates_all_pages():
+    """The M8550 paginates SMS at 8 per page. Earlier code only fetched page 1
+    via ``attrs=['PageNumber=1']``, but the EX-firmware request serializer
+    quotes any attr that lacks ``:`` as ``"PageNumber=1":""`` (a malformed
+    key), so the SET silently fails and the router returns whichever page it
+    happens to be on. list_sms() must walk pages with a properly JSON-
+    formatted attr and stop when an empty page is returned.
+    """
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+
+    def _row(idx, content="hi", unread="0"):
+        return {
+            "index": str(idx),
+            "from": "LABAS",
+            "content": content,
+            "receivedTime": f"2026-02-{(idx % 28) + 1:02d} 10:00:00",
+            "unread": unread,
+        }
+
+    page1 = [_row(i) for i in range(11, 19)]                   # 8 rows
+    page2 = [_row(i) for i in range(3, 11)]                    # 8 rows
+    page3 = [_row(i, content="Test", unread="1") for i in (1, 2)]  # 2 rows, one unread
+    # Each Python-level req_act call returns the result of ONE iteration
+    # (SET + GL bundled). The SET response has no "data" field so only the GL
+    # list ends up in `values`.
+    fake_lib.req_act.side_effect = [
+        ("raw", [page1]),
+        ("raw", [page2]),
+        ("raw", [page3]),
+        ("raw", [[]]),    # empty page → terminate
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    msgs = client.list_sms()
+
+    assert [m.id for m in msgs] == (
+        [i for i in range(11, 19)] + [i for i in range(3, 11)] + [1, 2]
+    )
+    assert sum(1 for m in msgs if m.unread) == 2
+    # SET attrs must contain a colon so the upstream EX serializer leaves the
+    # JSON intact instead of wrapping it as a malformed key.
+    set_calls = [
+        c for c in fake_lib.ActItem.call_args_list
+        if c.args and c.args[0] == "so"
+    ]
+    assert set_calls, "expected SET ActItems to be created"
+    for call in set_calls:
+        assert any(":" in a for a in call.kwargs.get("attrs", [])), (
+            f"SET attrs missing colon-formatted PageNumber: {call.kwargs}"
+        )
+
+
+def test_list_sms_stops_after_max_pages_on_repeating_router():
+    """Defensive: if the router ignores PageNumber and keeps returning the
+    same page (older firmware behaviour we observed pre-fix), iteration must
+    still terminate rather than loop forever. Dedup by id should cause the
+    second page-of-already-seen-ids to break the loop.
+    """
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+
+    same_page = [
+        {"index": "1", "from": "X", "content": "a",
+         "receivedTime": "2026-02-20 10:00:00", "unread": "0"},
+    ]
+    # 60 identical responses — well past any sane page cap.
+    fake_lib.req_act.side_effect = [("raw", [same_page])] * 60
+
+    client = LibRouterClient(_lib=fake_lib)
+    msgs = client.list_sms()
+
+    assert [m.id for m in msgs] == [1]
+    assert fake_lib.req_act.call_count < 60

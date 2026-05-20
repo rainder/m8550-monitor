@@ -260,40 +260,58 @@ class LibRouterClient:
         )
 
     def list_sms(self) -> list["SmsMessage"]:
-        """Fetch the inbox. M8550 uses DEV2_-prefixed variants of the OIDs
-        the MR client uses; the SET+GL pair returns one message page."""
-        acts = [
-            self._lib.ActItem(
-                self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX", attrs=["PageNumber=1"],
-            ),
-            self._lib.ActItem(
-                self._lib.ActItem.GL, "DEV2_LTE_SMS_RECVMSGENTRY",
-                attrs=["index", "from", "content", "receivedTime", "unread"],
-            ),
-        ]
-        try:
-            _, values = self._lib.req_act(acts)
-        except OSError as e:
-            raise ConnectionError(str(e)) from e
-        if not values or not values[0]:
-            return []
+        """Fetch the inbox. M8550 paginates at 8 messages/page; iterate until
+        the router returns an empty page.
+
+        The PageNumber attr is passed as a pre-quoted JSON fragment because
+        tplinkrouterc6u's EX-firmware serializer only quotes attrs that lack
+        ``:`` — passing ``"PageNumber=1"`` would be mangled into the malformed
+        key ``"PageNumber=1":""`` and the SET would silently fail (errorcode
+        9007), leaving the GL on whatever page the router happens to be on.
+        """
         out: list[SmsMessage] = []
-        for row in values[0]:
-            if not isinstance(row, dict):
-                continue
-            idx = _safe_int(row.get("index"))
-            if idx is None:
-                continue
-            received_at = _parse_received_time(row.get("receivedTime"))
-            if received_at is None:
-                continue
-            out.append(SmsMessage(
-                id=idx,
-                sender=str(row.get("from") or ""),
-                content=str(row.get("content") or ""),
-                received_at=received_at,
-                unread=str(row.get("unread") or "0") == "1",
-            ))
+        seen_ids: set[int] = set()
+        for page in range(1, 21):  # 20 pages × 8 = 160 msgs, far above any real inbox
+            acts = [
+                self._lib.ActItem(
+                    self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX",
+                    attrs=[f'"PageNumber":"{page}"'],
+                ),
+                self._lib.ActItem(
+                    self._lib.ActItem.GL, "DEV2_LTE_SMS_RECVMSGENTRY",
+                    attrs=["index", "from", "content", "receivedTime", "unread"],
+                ),
+            ]
+            try:
+                _, values = self._lib.req_act(acts)
+            except OSError as e:
+                raise ConnectionError(str(e)) from e
+            if not values or not values[0]:
+                break
+            rows = values[0]
+            added = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                idx = _safe_int(row.get("index"))
+                if idx is None or idx in seen_ids:
+                    continue
+                received_at = _parse_received_time(row.get("receivedTime"))
+                if received_at is None:
+                    continue
+                seen_ids.add(idx)
+                out.append(SmsMessage(
+                    id=idx,
+                    sender=str(row.get("from") or ""),
+                    content=str(row.get("content") or ""),
+                    received_at=received_at,
+                    unread=str(row.get("unread") or "0") == "1",
+                ))
+                added += 1
+            if added == 0:
+                # Either the page was truly empty or the router ignored
+                # PageNumber and returned a page we've already absorbed.
+                break
         return out
 
     def _fetch_all(self):
