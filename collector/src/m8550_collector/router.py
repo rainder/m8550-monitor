@@ -13,6 +13,13 @@ class RouterClientSnapshot:
     ip: str | None
     conn_type: str             # "host_2g" | "host_5g" | "wired"
     total_bytes: int | None    # cumulative combined RX+TX from DEV2_STAT_ENTRY; None if no stat row
+    # Cumulative packets (sent+received) from the AP-association layer
+    # (DEV2_ADT_WIFI_CLIENT). DEV2_STAT_ENTRY.totalBytes only tracks
+    # connection-tracking metadata on M8550 firmware (under-counts real
+    # throughput by ~1000×), so packet deltas scaled by an avg packet size
+    # derived from the WAN counter are our actual per-client bandwidth
+    # signal. None for wired clients or when the AP-stats fetch fails.
+    packets_total: int | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +288,7 @@ class LibRouterClient:
         else:
             self._consecutive_oserrors = 0
 
+        wifi_packets = self._fetch_wifi_client_packets()
         clients: list[RouterClientSnapshot] = []
         for d in status.devices:
             if not getattr(d, "active", True):
@@ -294,6 +302,7 @@ class LibRouterClient:
                     ip=str(d._ipaddr) if d._ipaddr is not None else None,
                     conn_type=d.type.value,
                     total_bytes=total,
+                    packets_total=wifi_packets.get(mac),
                 )
             )
 
@@ -505,4 +514,37 @@ class LibRouterClient:
                 result[mac] = int(row["totalBytes"])
             except (KeyError, TypeError, ValueError):
                 continue
+        return result
+
+    def _fetch_wifi_client_packets(self) -> dict[str, int]:
+        """Map MAC → cumulative packets (sent+received), from DEV2_ADT_WIFI_CLIENT.
+
+        This is the only per-client counter on M8550 firmware that tracks real
+        throughput. DEV2_STAT_ENTRY.totalBytes turned out to count only
+        connection-tracking metadata; bulk transfer bypasses it entirely.
+        """
+        try:
+            _, values = self._lib.req_act([
+                self._lib.ActItem(
+                    self._lib.ActItem.GL, "DEV2_ADT_WIFI_CLIENT",
+                    attrs=["MACAddress", "packetsSent", "packetsReceived"],
+                )
+            ])
+        except Exception:
+            return {}
+        if not values or not values[0]:
+            return {}
+        result: dict[str, int] = {}
+        for row in values[0]:
+            if not isinstance(row, dict):
+                continue
+            mac = row.get("MACAddress")
+            if not mac:
+                continue
+            try:
+                ps = int(row.get("packetsSent") or 0)
+                pr = int(row.get("packetsReceived") or 0)
+            except (TypeError, ValueError):
+                continue
+            result[_normalise_mac(str(mac))] = ps + pr
         return result

@@ -85,7 +85,7 @@ def test_first_client_tick_has_null_bandwidth(tmp_path):
             clients=[
                 RouterClientSnapshot(
                     mac="aa", name="phone", ip="1.1.1.1",
-                    conn_type="host_5g", total_bytes=500_000,
+                    conn_type="host_5g", total_bytes=500_000, packets_total=100,
                 ),
             ],
         ),
@@ -101,26 +101,30 @@ def test_first_client_tick_has_null_bandwidth(tmp_path):
     assert row == ("aa", "host_5g", 500_000, None)
 
 
-def test_second_tick_computes_per_client_bandwidth(tmp_path):
+def test_second_tick_scales_packets_by_wan_derived_avg(tmp_path):
+    """Bandwidth = packets/sec × (WAN B/s ÷ total client packets/sec). With
+    a single client carrying all the traffic, its bandwidth should equal the
+    WAN rate. Verifies the dynamic-avg-packet-size scaling that replaced the
+    old (broken) total_bytes-derived calculation."""
     store = _store(tmp_path)
     router = FakeRouter([
         RouterSnapshot(
-            total_bytes=10_000, rx_rate=100, tx_rate=50,
+            total_bytes=10_000, rx_rate=900, tx_rate=100,
             wan_status=_wan_idle(),
             clients=[
                 RouterClientSnapshot(
                     mac="aa", name="phone", ip="1.1.1.1",
-                    conn_type="host_5g", total_bytes=500_000,
+                    conn_type="host_5g", total_bytes=500_000, packets_total=0,
                 ),
             ],
         ),
         RouterSnapshot(
-            total_bytes=11_000, rx_rate=200, tx_rate=80,
+            total_bytes=15_000, rx_rate=900, tx_rate=100,
             wan_status=_wan_idle(),
             clients=[
                 RouterClientSnapshot(
                     mac="aa", name="phone", ip="1.1.1.1",
-                    conn_type="host_5g", total_bytes=505_000,
+                    conn_type="host_5g", total_bytes=500_500, packets_total=10,
                 ),
             ],
         ),
@@ -135,27 +139,104 @@ def test_second_tick_computes_per_client_bandwidth(tmp_path):
     row = conn.execute(
         "SELECT bandwidth FROM clients WHERE ts = 105"
     ).fetchone()
-    assert row == (1000,)  # (505_000 - 500_000) / 5
+    # 10 packets over 5s = 2 pps. WAN total = 1000 B/s. avg = 500 B/pkt.
+    # Single client → it gets the whole WAN: 2 pps × 500 B/pkt = 1000 B/s.
+    assert row == (1000,)
 
     sample = store.latest_sample()
-    assert sample["rx_rate"] == 200  # taken straight from router, no delta math
-    assert sample["tx_rate"] == 80
+    assert sample["rx_rate"] == 900
+    assert sample["tx_rate"] == 100
 
 
-def test_per_client_counter_reset_yields_null_bandwidth(tmp_path):
+def test_bandwidth_splits_proportional_to_packet_share(tmp_path):
+    """Two active clients carrying the same WAN: each gets a share of WAN B/s
+    proportional to its share of packets/sec."""
     store = _store(tmp_path)
     router = FakeRouter([
         RouterSnapshot(
-            total_bytes=10, rx_rate=0, tx_rate=0,
+            total_bytes=0, rx_rate=900, tx_rate=100,
             wan_status=_wan_idle(),
-            clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
-                                          conn_type="wired", total_bytes=500)],
+            clients=[
+                RouterClientSnapshot(mac="aa", name=None, ip=None,
+                                     conn_type="host_5g", total_bytes=0, packets_total=0),
+                RouterClientSnapshot(mac="bb", name=None, ip=None,
+                                     conn_type="host_5g", total_bytes=0, packets_total=0),
+            ],
         ),
         RouterSnapshot(
-            total_bytes=20, rx_rate=0, tx_rate=0,
+            total_bytes=5000, rx_rate=900, tx_rate=100,
+            wan_status=_wan_idle(),
+            clients=[
+                # 3:1 packet share across 5s → avg = 1000 / (4 pps) = 250 B/pkt
+                RouterClientSnapshot(mac="aa", name=None, ip=None,
+                                     conn_type="host_5g", total_bytes=0, packets_total=15),
+                RouterClientSnapshot(mac="bb", name=None, ip=None,
+                                     conn_type="host_5g", total_bytes=0, packets_total=5),
+            ],
+        ),
+    ])
+    clock = iter([100, 105])
+    p = Poller(router, store, now=lambda: next(clock))
+    p.tick(); p.tick()
+
+    conn = sqlite3.connect(store.path)
+    rows = dict(conn.execute(
+        "SELECT mac, bandwidth FROM clients WHERE ts = 105"
+    ).fetchall())
+    # avg packet size = 1000 / 4 = 250 B/pkt
+    # aa: 3 pps × 250 = 750 B/s   bb: 1 pps × 250 = 250 B/s
+    assert rows == {"aa": 750, "bb": 250}
+
+
+def test_wired_client_without_packet_counter_yields_null_bandwidth(tmp_path):
+    """DEV2_ADT_WIFI_CLIENT only lists Wi-Fi clients; a wired client lacks a
+    packets_total. The poller must record the row but leave bandwidth None
+    rather than misattributing WAN traffic to it."""
+    store = _store(tmp_path)
+    router = FakeRouter([
+        RouterSnapshot(
+            total_bytes=0, rx_rate=1000, tx_rate=0,
             wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
-                                          conn_type="wired", total_bytes=10)],
+                                          conn_type="wired",
+                                          total_bytes=100, packets_total=None)],
+        ),
+        RouterSnapshot(
+            total_bytes=5000, rx_rate=1000, tx_rate=0,
+            wan_status=_wan_idle(),
+            clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
+                                          conn_type="wired",
+                                          total_bytes=200, packets_total=None)],
+        ),
+    ])
+    clock = iter([100, 105])
+    p = Poller(router, store, now=lambda: next(clock))
+    p.tick(); p.tick()
+
+    conn = sqlite3.connect(store.path)
+    row = conn.execute("SELECT bandwidth FROM clients WHERE ts = 105").fetchone()
+    assert row == (None,)
+
+
+def test_per_client_counter_reset_yields_null_bandwidth(tmp_path):
+    """If the router-side packet counter drops between ticks (router reboot,
+    client reassociation, MAC change), we must report None rather than a
+    nonsense negative-derived rate."""
+    store = _store(tmp_path)
+    router = FakeRouter([
+        RouterSnapshot(
+            total_bytes=10, rx_rate=1000, tx_rate=0,
+            wan_status=_wan_idle(),
+            clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
+                                          conn_type="host_5g",
+                                          total_bytes=500, packets_total=500)],
+        ),
+        RouterSnapshot(
+            total_bytes=20, rx_rate=1000, tx_rate=0,
+            wan_status=_wan_idle(),
+            clients=[RouterClientSnapshot(mac="aa", name=None, ip=None,
+                                          conn_type="host_5g",
+                                          total_bytes=10, packets_total=10)],
         ),
     ])
     clock = iter([100, 105])
@@ -169,25 +250,27 @@ def test_per_client_counter_reset_yields_null_bandwidth(tmp_path):
     assert row == (None,)
 
 
-def test_per_client_total_bytes_disappears_yields_null_bandwidth(tmp_path):
-    """Tick 1: client has total_bytes=500_000. Tick 2: same MAC, total_bytes=None.
-    Must NOT crash; bandwidth at tick 2 should be None."""
+def test_per_client_packet_counter_disappears_yields_null_bandwidth(tmp_path):
+    """Tick 1: client has packets_total=1000. Tick 2: same MAC,
+    packets_total=None (Wi-Fi client dropped out of DEV2_ADT_WIFI_CLIENT
+    but still in DEV2_STAT_ENTRY). Must NOT crash; bandwidth at tick 2 is
+    None."""
     store = _store(tmp_path)
     router = FakeRouter([
         RouterSnapshot(
-            total_bytes=10, rx_rate=0, tx_rate=0,
+            total_bytes=10, rx_rate=1000, tx_rate=0,
             wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(
                 mac="aa", name=None, ip=None,
-                conn_type="host_5g", total_bytes=500_000,
+                conn_type="host_5g", total_bytes=500_000, packets_total=1000,
             )],
         ),
         RouterSnapshot(
-            total_bytes=20, rx_rate=0, tx_rate=0,
+            total_bytes=20, rx_rate=1000, tx_rate=0,
             wan_status=_wan_idle(),
             clients=[RouterClientSnapshot(
                 mac="aa", name=None, ip=None,
-                conn_type="host_5g", total_bytes=None,
+                conn_type="host_5g", total_bytes=None, packets_total=None,
             )],
         ),
     ])

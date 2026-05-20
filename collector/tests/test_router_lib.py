@@ -75,6 +75,48 @@ def test_snapshot_combines_lte_status_status_and_dev2_stat(monkeypatch):
     ], key=lambda c: c.mac)
 
 
+def test_snapshot_populates_packets_total_from_wifi_client_oid():
+    """Per-client bandwidth derives from packet deltas, so the snapshot must
+    surface cumulative packets from DEV2_ADT_WIFI_CLIENT alongside the
+    DEV2_STAT_ENTRY byte counter. MAC normalisation matches the lower-case
+    form the OID returns."""
+    fake_lib = MagicMock()
+
+    lte = MagicMock()
+    lte.total_statistics = 1; lte.cur_rx_speed = 0; lte.cur_tx_speed = 0
+    lte.sig_level = 4; lte.rsrp = -82; lte.rsrq = -10; lte.snr = 14
+    lte.isp_name = "Bite"
+    fake_lib.get_lte_status.return_value = lte
+
+    status = MagicMock()
+    status.devices = [_device("AA-BB-CC-DD-EE-01", "Mac", "192.168.1.15", "host_5g")]
+    status.cpu_usage = 0; status.mem_usage = 0
+    fake_lib.get_status.return_value = status
+
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.GET = "go"
+    fake_lib.req_act.side_effect = [
+        # 1) DEV2_STAT_ENTRY: cumulative bytes per MAC
+        ("raw", [[{"macAddress": "AA:BB:CC:DD:EE:01", "totalBytes": "123"}]]),
+        # 2) DEV2_ADT_WIFI_CLIENT: cumulative packets per MAC (lower-case from router)
+        ("raw", [[{"MACAddress": "aa:bb:cc:dd:ee:01",
+                   "packetsSent": "100", "packetsReceived": "50"}]]),
+        # 3) DEV2_LTE_LINK_CFG, 4) DEV2_LTE_SERVING_CELL_INFO: irrelevant here
+        ("raw", [[]]),
+        ("raw", [[]]),
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    snap = client.snapshot()
+
+    assert len(snap.clients) == 1
+    c = snap.clients[0]
+    assert c.mac == "AA:BB:CC:DD:EE:01"
+    assert c.total_bytes == 123
+    assert c.packets_total == 150  # 100 sent + 50 received
+
+
 def test_snapshot_handles_missing_stat_entry_for_known_device():
     """A device exists in get_status() but has no DEV2_STAT_ENTRY row → total_bytes=None."""
     fake_lib = MagicMock()
@@ -433,9 +475,11 @@ def test_snapshot_carries_wan_status():
     fake_lib.ActItem = MagicMock()
     fake_lib.ActItem.GL = "gl"
     fake_lib.ActItem.GET = "go"
-    # Three req_act calls: _fetch_stat_rows, _fetch_link_cfg, _fetch_serving_cells
+    # Four req_act calls: _fetch_stat_rows, _fetch_wifi_client_packets,
+    # _fetch_link_cfg, _fetch_serving_cells.
     fake_lib.req_act.side_effect = [
         ("raw", [[]]),   # stat rows → empty
+        ("raw", [[]]),   # wifi pkts → empty
         ("raw", [[]]),   # link cfg → empty
         ("raw", [[]]),   # serving cells → no active cells
     ]
@@ -475,11 +519,13 @@ def test_snapshot_includes_serving_cell_signal(monkeypatch):
     fake_lib.ActItem.GL = "gl"
     fake_lib.ActItem.GET = "go"
 
-    # Three req_act calls in order:
-    #   1) DEV2_STAT_ENTRY  (clients) → empty
-    #   2) DEV2_LTE_LINK_CFG          → link cfg dict
-    #   3) DEV2_LTE_SERVING_CELL_INFO → list of cells
+    # Four req_act calls in order:
+    #   1) DEV2_STAT_ENTRY        (clients)    → empty
+    #   2) DEV2_ADT_WIFI_CLIENT   (pkt counters) → empty
+    #   3) DEV2_LTE_LINK_CFG                   → link cfg dict
+    #   4) DEV2_LTE_SERVING_CELL_INFO          → list of cells
     fake_lib.req_act.side_effect = [
+        ("raw", [[]]),
         ("raw", [[]]),
         ("raw", [{"connectedBand": "B3;N40", "endcStatus": "1", "networkType": "8",
                   "ipv4": "10.0.0.1", "ipv6": "2a00::1"}]),

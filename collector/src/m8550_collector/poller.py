@@ -3,7 +3,6 @@ import time
 from typing import Callable
 
 from .push import PushSubscription, VapidKeys, dispatch_sms_pushes
-from .rate import RateInputs, compute_rate
 from .router import AuthError, RouterClient
 from .store import Store
 
@@ -28,6 +27,9 @@ class Poller:
         self.sms_poll_interval = sms_poll_interval
         self.vapid_keys = vapid_keys
         self._last_sms_fetch_ts = 0
+        # MAC → (ts, cumulative_packets). Held in-memory; bandwidth is
+        # ephemeral so we don't bother persisting it across collector restarts.
+        self._last_packets: dict[str, tuple[int, int]] = {}
 
     def tick(self) -> None:
         ts = self.now()
@@ -58,20 +60,43 @@ class Poller:
             wan_status=snap.wan_status,
         )
 
-        # Per-client bandwidth: derive from cumulative deltas.
-        prev_totals = self.store.last_client_totals()
+        # Per-client bandwidth: packet deltas × avg packet size.
+        #
+        # The router's DEV2_STAT_ENTRY.totalBytes per-client counter only
+        # tracks connection-tracking metadata on M8550 firmware (under-counts
+        # by ~1000× during bulk transfer), so we derive bandwidth from the
+        # AP-association packet counters instead. To turn packets/sec back
+        # into bytes/sec we estimate avg packet size from the WAN counter,
+        # which IS accurate: avg = (rx_rate + tx_rate) / total_packets_per_sec.
+        next_packets: dict[str, tuple[int, int]] = {}
+        client_packet_rates: dict[str, int] = {}
+        for c in snap.clients:
+            if c.packets_total is None:
+                continue
+            next_packets[c.mac] = (ts, c.packets_total)
+            prev = self._last_packets.get(c.mac)
+            if prev is None:
+                continue
+            prev_ts, prev_packets = prev
+            dt = ts - prev_ts
+            if dt <= 0 or dt > self.max_gap_seconds:
+                continue
+            delta = c.packets_total - prev_packets
+            if delta < 0:
+                continue
+            client_packet_rates[c.mac] = int(delta / dt)
+        total_pps = sum(client_packet_rates.values())
+        wan_bps = (snap.rx_rate or 0) + (snap.tx_rate or 0)
+        avg_pkt_size = wan_bps / total_pps if total_pps > 0 else 0.0
+        self._last_packets = next_packets
+
         client_rows: list[dict] = []
         for c in snap.clients:
-            prev = prev_totals.get(c.mac)
-            bandwidth = compute_rate(
-                RateInputs(
-                    prev_ts=prev[0] if prev else None,
-                    prev_total=prev[1] if prev else None,
-                    ts=ts,
-                    total=c.total_bytes,
-                ),
-                max_gap_seconds=self.max_gap_seconds,
-            )
+            pps = client_packet_rates.get(c.mac)
+            if pps is not None and avg_pkt_size > 0:
+                bandwidth: int | None = int(pps * avg_pkt_size)
+            else:
+                bandwidth = None
             client_rows.append({
                 "mac": c.mac,
                 "name": c.name,
