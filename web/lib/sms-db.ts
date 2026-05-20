@@ -1,8 +1,7 @@
 /**
- * Writable handle for sms_actions only. The web side enqueues user-initiated
- * mark-read / delete requests; the collector consumes the queue at the start
- * of its next tick, executes them against the router, and clears the row.
- * The main db.ts handle stays read-only by design.
+ * Writable handle for the user-action queues the web side feeds. The collector
+ * drains them at the start of its tick. The main db.ts handle stays read-only
+ * by design — only this module writes.
  */
 import Database from "better-sqlite3"
 
@@ -22,6 +21,13 @@ function getDb(): Database.Database {
     "  created_at INTEGER NOT NULL" +
     ")",
   )
+  writeDb.exec(
+    "CREATE TABLE IF NOT EXISTS router_actions (" +
+    "  id         INTEGER PRIMARY KEY AUTOINCREMENT," +
+    "  action     TEXT NOT NULL," +
+    "  created_at INTEGER NOT NULL" +
+    ")",
+  )
   return writeDb
 }
 
@@ -31,4 +37,12 @@ export function enqueueSmsAction(smsId: number, action: SmsAction): void {
   getDb()
     .prepare("INSERT INTO sms_actions (sms_id, action, created_at) VALUES (?, ?, ?)")
     .run(smsId, action, Math.floor(Date.now() / 1000))
+}
+
+export type RouterAction = "reauth"
+
+export function enqueueRouterAction(action: RouterAction): void {
+  getDb()
+    .prepare("INSERT INTO router_actions (action, created_at) VALUES (?, ?)")
+    .run(action, Math.floor(Date.now() / 1000))
 }

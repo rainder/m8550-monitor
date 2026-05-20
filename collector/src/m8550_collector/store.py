@@ -76,6 +76,12 @@ CREATE INDEX IF NOT EXISTS idx_sms_actions_id ON sms_actions(id);
 CREATE TABLE IF NOT EXISTS sms_hidden (
     sms_id INTEGER PRIMARY KEY
 );
+
+CREATE TABLE IF NOT EXISTS router_actions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    action     TEXT NOT NULL,     -- 'reauth'
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -299,6 +305,27 @@ class Store:
     def delete_sms_action(self, action_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM sms_actions WHERE id = ?", (action_id,))
+
+    def enqueue_router_action(self, action: str, created_at: int) -> int:
+        if action not in ("reauth",):
+            raise ValueError(f"unknown router action: {action!r}")
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO router_actions (action, created_at) VALUES (?, ?)",
+                (action, created_at),
+            )
+            return int(cur.lastrowid)
+
+    def pending_router_actions(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, action, created_at FROM router_actions ORDER BY id ASC"
+            ).fetchall()
+        return [{"id": r[0], "action": r[1], "created_at": r[2]} for r in rows]
+
+    def delete_router_action(self, action_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM router_actions WHERE id = ?", (action_id,))
 
     def mark_sms_read_local(self, sms_id: int) -> None:
         with self._connect() as conn:

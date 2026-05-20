@@ -363,6 +363,35 @@ def test_replace_sms_clears_hidden_tombstone_when_id_no_longer_on_router(tmp_pat
     assert visible == {1: "NEW", 2: "X"}
 
 
+def test_enqueue_router_action_then_pending_fifo(tmp_path):
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    a1 = s.enqueue_router_action(action="reauth", created_at=10)
+    a2 = s.enqueue_router_action(action="reauth", created_at=11)
+
+    pending = s.pending_router_actions()
+    assert [p["id"] for p in pending] == [a1, a2]
+    assert all(p["action"] == "reauth" for p in pending)
+
+
+def test_enqueue_router_action_rejects_unknown_action(tmp_path):
+    import pytest
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    with pytest.raises(ValueError):
+        s.enqueue_router_action(action="restart", created_at=10)
+
+
+def test_delete_router_action_removes_only_that_row(tmp_path):
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    a = s.enqueue_router_action(action="reauth", created_at=10)
+    b = s.enqueue_router_action(action="reauth", created_at=11)
+    s.delete_router_action(a)
+    remaining = s.pending_router_actions()
+    assert [r["id"] for r in remaining] == [b]
+
+
 def test_replace_sms_skips_push_for_hidden_id(tmp_path):
     """Hidden ids must not appear in the "new arrivals" set returned to the
     pusher, even if they're absent from sms_messages between polls."""

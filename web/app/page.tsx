@@ -5,6 +5,7 @@ import { useState } from "react"
 import { ClientModal } from "@/components/client-modal"
 import { ClientsTable } from "@/components/clients-table"
 import { NotificationsToggle } from "@/components/notifications-toggle"
+import { ReclaimButton } from "@/components/reclaim-button"
 import { SignalPanel } from "@/components/signal-panel"
 import { SmsPanel } from "@/components/sms-panel"
 import { StatCard } from "@/components/stat-card"
@@ -178,6 +179,7 @@ function Header({
         <NotificationsToggle />
         <Metric label="Updated" value={formatRelative(ageSeconds)} />
         <StatusIndicator online={online} ageSeconds={ageSeconds} />
+        <ReclaimButton online={online} ageSeconds={ageSeconds} />
       </div>
     </header>
   )

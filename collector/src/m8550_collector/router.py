@@ -94,6 +94,16 @@ class RouterClient(Protocol):
         """
         ...
 
+    def force_reauth(self) -> bool:
+        """Clear any active backoff and immediately try to reclaim the router
+        session. User-triggered: only call when the user explicitly asks for
+        it (e.g. they closed Tether and don't want to wait out the 60s).
+
+        Returns True on successful reauth. On failure the backoff is re-armed
+        and the method may raise AuthError or ConnectionError.
+        """
+        ...
+
 
 class AuthError(Exception):
     """Session is unusable due to contention (likely the Tether app)."""
@@ -448,6 +458,20 @@ class LibRouterClient:
     # DEV2_LTE_SMS_RECVMSGENTRY (errorcode 71011) and there's no settable attr
     # we found that removes a message. The poller handles "delete" actions as
     # a local soft-hide instead — see Store.hide_sms_local().
+
+    def force_reauth(self) -> bool:
+        """Bypass the auth backoff and try to reclaim the session immediately."""
+        self._kicked_until = None
+        self._consecutive_oserrors = 0
+        try:
+            self._lib.authorize()
+        except Exception as e:
+            self._kicked_until = self._now() + self._auth_backoff_seconds
+            raise AuthError(
+                f"force reauth failed: {e}",
+                retry_after=self._auth_backoff_seconds,
+            ) from e
+        return True
 
     def _fetch_all(self):
         lte = self._lib.get_lte_status()

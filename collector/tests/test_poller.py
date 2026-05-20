@@ -26,9 +26,17 @@ class FakeRouter:
         self.sms = sms if sms is not None else []
         self.sms_calls = 0
         self.mark_calls: list[int] = []
+        self.reauth_calls = 0
+        self.reauth_result: object = True
         # Per-id behaviour overrides — set to bool to short-circuit or to an
         # Exception to raise. Default is "id present → True".
         self.mark_result: dict[int, object] = {}
+
+    def force_reauth(self) -> bool:
+        self.reauth_calls += 1
+        if isinstance(self.reauth_result, Exception):
+            raise self.reauth_result
+        return bool(self.reauth_result)
 
     def snapshot(self):
         if not self.snapshots:
@@ -602,6 +610,44 @@ def test_tick_drops_mark_read_action_on_non_transient_failure(tmp_path):
 
     assert store.pending_sms_actions() == []
     assert store.list_sms()[0]["unread"] is True  # local cache untouched
+
+
+def test_tick_processes_pending_reauth_action_before_snapshot(tmp_path):
+    """A queued 'reauth' action signals the user closed Tether (or whatever was
+    holding the session) and wants the collector to reclaim NOW instead of
+    waiting out the 60s backoff. The poller must call force_reauth() before
+    the normal snapshot path and consume the queue entry exactly once."""
+    store = _store(tmp_path)
+    store.enqueue_router_action(action="reauth", created_at=200)
+
+    router = FakeRouter([
+        RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                       wan_status=_wan_idle(), clients=[]),
+    ])
+    p = Poller(router, store, now=lambda: 300, sms_poll_interval=0)
+    p.tick()
+
+    assert router.reauth_calls == 1
+    assert store.pending_router_actions() == []
+
+
+def test_tick_drops_reauth_action_even_when_reclaim_fails(tmp_path):
+    """If force_reauth raises (router unreachable or still kicked), we still
+    consume the queue entry — the user can click again. Looping on the same
+    failed action would mask the underlying issue."""
+    store = _store(tmp_path)
+    store.enqueue_router_action(action="reauth", created_at=200)
+
+    router = FakeRouter([
+        RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
+                       wan_status=_wan_idle(), clients=[]),
+    ])
+    router.reauth_result = AuthError("still kicked")
+    p = Poller(router, store, now=lambda: 300, sms_poll_interval=0)
+    p.tick()  # must not raise
+
+    assert router.reauth_calls == 1
+    assert store.pending_router_actions() == []
 
 
 def test_poller_persists_wan_status(tmp_path):

@@ -33,6 +33,10 @@ class Poller:
 
     def tick(self) -> None:
         ts = self.now()
+        # If the user pressed "Reclaim session" in the UI, jump the backoff
+        # and try to authorize right now — the snapshot below then has a
+        # fresh session to work with.
+        self._process_router_actions()
         try:
             snap = self.router.snapshot()
         except AuthError as e:
@@ -128,6 +132,20 @@ class Poller:
                 log.warning("sms fetch skipped: %s", e)
             except Exception:
                 log.exception("sms fetch failed")
+
+    def _process_router_actions(self) -> None:
+        for a in self.store.pending_router_actions():
+            try:
+                if a["action"] == "reauth":
+                    self.router.force_reauth()
+                else:
+                    log.warning("dropping unknown router action %r", a["action"])
+            except Exception as e:
+                # Drop the action regardless: the user can click again if
+                # they still want a retry. Looping on a failed reauth would
+                # only hide the underlying problem.
+                log.warning("router action %s failed: %s", a["action"], e)
+            self.store.delete_router_action(a["id"])
 
     def _process_sms_actions(self) -> None:
         actions = self.store.pending_sms_actions()
