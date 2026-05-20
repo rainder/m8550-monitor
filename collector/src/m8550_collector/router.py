@@ -2,6 +2,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+import requests
+
 
 @dataclass(frozen=True)
 class RouterClientSnapshot:
@@ -117,6 +119,33 @@ def _safe_float(v) -> float | None:
         return None
 
 
+def _router_busy(host: str, timeout: float = 5.0) -> bool:
+    """Ask the router whether another session holds the auth slot. Hits
+    /cgi/getBusy unauthenticated — the official web UI uses the same probe
+    to decide whether to show its "kick existing session?" popup.
+
+    Response semantics (observed on M8550 firmware):
+      - HTTP 200 with body containing ``isBusy=1`` → someone else is logged in
+      - HTTP 200 with body containing ``isBusy=0`` → nobody is logged in
+      - HTTP 406 → we already own the session (probe sent our own JSESSIONID)
+      - anything else (network error, parse failure) → fail open and return
+        False; better to attempt the login than freeze the collector based
+        on an unreliable signal.
+    """
+    try:
+        r = requests.post(
+            f"{host.rstrip('/')}/cgi/getBusy",
+            headers={"Referer": host, "Origin": host},
+            timeout=timeout,
+        )
+    except Exception as e:
+        log.debug("getBusy probe failed (%s); assuming not busy", e)
+        return False
+    if r.status_code != 200:
+        return False
+    return "isBusy=1" in r.text
+
+
 def _parse_received_time(s) -> int | None:
     """Router returns local-tz strings like "2026-02-20 16:01:19". Treat as UTC
     since the router clock is its own beast; the consumer can format with
@@ -149,6 +178,7 @@ class LibRouterClient:
         *,
         auth_backoff_seconds: int = 300,
         stale_session_threshold: int = 4,
+        busy_probe: Callable[[], bool] | None = None,
         _now: Callable[[], int] = lambda: int(time.time()),
     ):
         self._auth_backoff_seconds = auth_backoff_seconds
@@ -156,6 +186,14 @@ class LibRouterClient:
         self._now = _now
         self._kicked_until: int | None = None
         self._consecutive_oserrors = 0
+        # busy_probe returns True when another session is active. Defaults to
+        # hitting /cgi/getBusy on the configured host. Tests override it.
+        if busy_probe is not None:
+            self._busy_probe = busy_probe
+        elif host:
+            self._busy_probe = lambda: _router_busy(host)
+        else:
+            self._busy_probe = lambda: False  # no host → no remote probe
         if _lib is not None:
             self._lib = _lib
             return
@@ -163,6 +201,24 @@ class LibRouterClient:
         self._lib = TplinkRouterProvider.get_client(
             host, password, username="user", logger=log,
         )
+        try:
+            self._safe_authorize()
+        except AuthError as e:
+            # Don't fail container startup if Tether already holds the session
+            # — _kicked_until is armed; snapshot() will retry after backoff.
+            log.warning("startup: %s", e)
+
+    def _safe_authorize(self) -> None:
+        """authorize() unless another session is active. If busy, arm the
+        kick cooldown and raise AuthError instead of stealing the session."""
+        if self._busy_probe():
+            now = self._now()
+            self._kicked_until = now + self._auth_backoff_seconds
+            raise AuthError(
+                f"another session is active; backing off "
+                f"{self._auth_backoff_seconds}s to avoid kicking it",
+                retry_after=self._auth_backoff_seconds,
+            )
         self._lib.authorize()
 
     def snapshot(self) -> RouterSnapshot:
@@ -176,7 +232,11 @@ class LibRouterClient:
                 )
             self._kicked_until = None
             try:
-                self._lib.authorize()
+                self._safe_authorize()
+            except AuthError:
+                # _safe_authorize armed the cooldown when it detected a busy
+                # router — propagate as-is.
+                raise
             except Exception as e:
                 self._kicked_until = now + self._auth_backoff_seconds
                 raise AuthError(
@@ -196,8 +256,11 @@ class LibRouterClient:
             if self._consecutive_oserrors < self._stale_session_threshold:
                 raise ConnectionError(str(e)) from e
             try:
-                self._lib.authorize()
+                self._safe_authorize()
                 lte, status, stat_rows = self._fetch_all()
+            except AuthError:
+                self._consecutive_oserrors = 0
+                raise
             except Exception as reauth_err:
                 self._kicked_until = now + self._auth_backoff_seconds
                 self._consecutive_oserrors = 0

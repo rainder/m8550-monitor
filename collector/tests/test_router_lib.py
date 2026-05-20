@@ -331,6 +331,68 @@ def test_successful_snapshot_resets_oserror_counter():
     fake_lib.authorize.assert_not_called()
 
 
+def test_safe_authorize_skips_login_when_router_busy(monkeypatch):
+    """The official UI calls /cgi/getBusy first and shows a popup if isBusy=1.
+    Our collector must do the same — refuse to log in, arm the cooldown."""
+    fake_lib = MagicMock()
+    client = LibRouterClient(
+        _lib=fake_lib,
+        busy_probe=lambda: True,
+        auth_backoff_seconds=600,
+        _now=lambda: 1000,
+    )
+
+    with pytest.raises(AuthError) as exc:
+        client._safe_authorize()
+    assert exc.value.retry_after == 600
+    assert client._kicked_until == 1600
+    fake_lib.authorize.assert_not_called()
+
+
+def test_safe_authorize_proceeds_when_router_not_busy():
+    fake_lib = MagicMock()
+    client = LibRouterClient(
+        _lib=fake_lib,
+        busy_probe=lambda: False,
+        auth_backoff_seconds=600,
+        _now=lambda: 1000,
+    )
+
+    client._safe_authorize()
+    fake_lib.authorize.assert_called_once()
+    assert client._kicked_until is None
+
+
+def test_snapshot_reauth_after_backoff_defers_again_when_router_still_busy():
+    """When the cooldown expires but Tether (or whoever) is still logged in,
+    we must NOT steal the session back — re-arm the backoff for another
+    cycle instead of calling authorize()."""
+    from tplinkrouterc6u.common.exception import ClientException
+
+    fake_lib = MagicMock()
+    fake_lib.get_lte_status.side_effect = ClientException("kicked")
+
+    # The _lib injection short-circuits the init-time authorize, so the
+    # busy_probe is only invoked once: by the cooldown-expired reauth path.
+    clock = iter([1000, 2000])  # first snapshot kicks, second past cooldown
+    client = LibRouterClient(
+        _lib=fake_lib,
+        busy_probe=lambda: True,
+        auth_backoff_seconds=500,
+        _now=lambda: next(clock),
+    )
+
+    # First snapshot fails (session kicked by external party) → arms backoff.
+    with pytest.raises(AuthError):
+        client.snapshot()
+    # Second snapshot is past the cooldown but the router is still busy.
+    # Must raise AuthError again with a fresh cooldown — never call authorize.
+    with pytest.raises(AuthError) as exc:
+        client.snapshot()
+    assert exc.value.retry_after == 500
+    fake_lib.authorize.assert_not_called()
+
+
 def test_reauth_after_backoff_failure_re_arms_cooldown():
     """If the reclaim re-auth still fails (Tether is still active), arm the
     cooldown again instead of busy-looping."""
