@@ -5,6 +5,8 @@ import { useState } from "react"
 import { SmsModal } from "@/components/sms-modal"
 import type { SmsMessage } from "@/lib/types"
 
+const PAGE_SIZE = 8
+
 type Props = {
   messages: SmsMessage[]
   unreadCount: number
@@ -15,11 +17,20 @@ type Props = {
 
 export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete }: Props) {
   const [openId, setOpenId] = useState<number | null>(null)
+  const [page, setPage] = useState(1)
 
   if (syncedAt === 0 && messages.length === 0) {
     // Never synced yet — silently hide so old DBs don't render an empty section.
     return null
   }
+
+  const totalPages = Math.max(1, Math.ceil(messages.length / PAGE_SIZE))
+  // Clamp in case messages shrunk (hide/delete) while we were on a later page.
+  const currentPage = Math.min(page, totalPages)
+  const pageStart = (currentPage - 1) * PAGE_SIZE
+  const pageMessages = messages.slice(pageStart, pageStart + PAGE_SIZE)
+  const rangeStart = messages.length === 0 ? 0 : pageStart + 1
+  const rangeEnd = pageStart + pageMessages.length
 
   const open = openId !== null ? messages.find((m) => m.id === openId) ?? null : null
 
@@ -32,7 +43,7 @@ export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete
           </div>
         ) : (
           <ul className="divide-y divide-[var(--color-border)]">
-            {messages.map((m) => (
+            {pageMessages.map((m) => (
               <SmsRow
                 key={m.id}
                 message={m}
@@ -40,6 +51,17 @@ export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete
               />
             ))}
           </ul>
+        )}
+        {messages.length > PAGE_SIZE && (
+          <Pager
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            total={messages.length}
+            page={currentPage}
+            totalPages={totalPages}
+            onPrev={() => setPage(Math.max(1, currentPage - 1))}
+            onNext={() => setPage(Math.min(totalPages, currentPage + 1))}
+          />
         )}
       </Section>
       {open && (
@@ -51,6 +73,56 @@ export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete
         />
       )}
     </>
+  )
+}
+
+function Pager({
+  rangeStart, rangeEnd, total, page, totalPages, onPrev, onNext,
+}: {
+  rangeStart: number
+  rangeEnd: number
+  total: number
+  page: number
+  totalPages: number
+  onPrev: () => void
+  onNext: () => void
+}) {
+  const atFirst = page <= 1
+  const atLast = page >= totalPages
+  return (
+    <div className="flex items-center justify-between border-t border-[var(--color-border)] px-5 py-2.5">
+      <span className="text-[11px] text-zinc-500 tabular-nums font-mono">
+        {rangeStart}–{rangeEnd} of {total}
+      </span>
+      <div className="flex items-center gap-1">
+        <PagerButton onClick={onPrev} disabled={atFirst} label="prev">‹</PagerButton>
+        <span className="px-1.5 text-[11px] font-mono tabular-nums text-zinc-400">
+          {page}/{totalPages}
+        </span>
+        <PagerButton onClick={onNext} disabled={atLast} label="next">›</PagerButton>
+      </div>
+    </div>
+  )
+}
+
+function PagerButton({
+  onClick, disabled, label, children,
+}: {
+  onClick: () => void
+  disabled: boolean
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="rounded-sm border border-[var(--color-border)] px-2 py-0.5 text-xs font-mono text-zinc-300 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+    >
+      {children}
+    </button>
   )
 }
 
