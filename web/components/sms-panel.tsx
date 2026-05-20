@@ -9,9 +9,11 @@ type Props = {
   messages: SmsMessage[]
   unreadCount: number
   syncedAt: number   // unix seconds; 0 when never synced
+  onMarkRead: (id: number) => void
+  onDelete: (id: number) => void
 }
 
-export function SmsPanel({ messages, unreadCount, syncedAt }: Props) {
+export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete }: Props) {
   const [openId, setOpenId] = useState<number | null>(null)
 
   if (syncedAt === 0 && messages.length === 0) {
@@ -40,7 +42,14 @@ export function SmsPanel({ messages, unreadCount, syncedAt }: Props) {
           </ul>
         )}
       </Section>
-      {open && <SmsModal message={open} onClose={() => setOpenId(null)} />}
+      {open && (
+        <SmsModal
+          message={open}
+          onClose={() => setOpenId(null)}
+          onMarkRead={onMarkRead}
+          onDelete={onDelete}
+        />
+      )}
     </>
   )
 }

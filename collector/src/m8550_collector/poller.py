@@ -83,6 +83,11 @@ class Poller:
 
         self.store.append_clients(ts=ts, clients=client_rows)
 
+        # User-initiated SMS actions (mark-read / delete) sit in a queue
+        # the web app populates. Process them eagerly — every tick — so
+        # the UI feels snappy even though the inbox itself polls slower.
+        self._process_sms_actions()
+
         # SMS — refresh on a slower cadence than the rate poll.
         if (
             self.sms_poll_interval > 0
@@ -98,6 +103,32 @@ class Poller:
                 log.warning("sms fetch skipped: %s", e)
             except Exception:
                 log.exception("sms fetch failed")
+
+    def _process_sms_actions(self) -> None:
+        actions = self.store.pending_sms_actions()
+        for a in actions:
+            sms_id = a["sms_id"]
+            action = a["action"]
+            try:
+                if action == "mark_read":
+                    ok = self.router.mark_sms_read(sms_id)
+                    if ok:
+                        self.store.mark_sms_read_local(sms_id)
+                elif action == "delete":
+                    # M8550 firmware doesn't expose a working router-side
+                    # delete; this is a local soft-hide. The row stays on the
+                    # router but our list_sms() filters it out.
+                    self.store.hide_sms_local(sms_id)
+                else:
+                    log.warning("dropping unknown sms action %r for id=%s", action, sms_id)
+                self.store.delete_sms_action(a["id"])
+            except (AuthError, ConnectionError) as e:
+                # Transient — keep the action queued and try next tick.
+                log.warning("sms action %s id=%s deferred: %s", action, sms_id, e)
+                return
+            except Exception:
+                log.exception("sms action %s id=%s failed; dropping", action, sms_id)
+                self.store.delete_sms_action(a["id"])
 
     def _push_new_sms(self, new_messages) -> None:
         try:

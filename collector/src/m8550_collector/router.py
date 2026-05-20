@@ -77,6 +77,14 @@ class RouterClient(Protocol):
         """Return the router's SMS inbox. May raise the same exceptions as snapshot()."""
         ...
 
+    def mark_sms_read(self, message_id: int) -> bool:
+        """Mark the SMS with the given router-side index as read.
+
+        Returns True on success, False if the message is no longer on the router.
+        May raise the same exceptions as snapshot().
+        """
+        ...
+
 
 class AuthError(Exception):
     """Session is unusable due to contention (likely the Tether app)."""
@@ -313,6 +321,61 @@ class LibRouterClient:
                 # PageNumber and returned a page we've already absorbed.
                 break
         return out
+
+    def _locate_sms(self, message_id: int) -> tuple[int, int] | None:
+        """Walk pages until we find the (page, slot) holding ``message_id``.
+
+        ``slot`` is the 1-based row position within the page — it shifts when
+        other rows are deleted, so callers must re-locate before each mutation.
+        """
+        for page in range(1, 21):
+            try:
+                _, values = self._lib.req_act([
+                    self._lib.ActItem(
+                        self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX",
+                        attrs=[f'"PageNumber":"{page}"'],
+                    ),
+                    self._lib.ActItem(
+                        self._lib.ActItem.GL, "DEV2_LTE_SMS_RECVMSGENTRY",
+                        attrs=["index"],
+                    ),
+                ])
+            except OSError as e:
+                raise ConnectionError(str(e)) from e
+            if not values or not values[0]:
+                return None
+            rows = values[0]
+            if not isinstance(rows, list):
+                return None
+            for slot, row in enumerate(rows, start=1):
+                if isinstance(row, dict) and _safe_int(row.get("index")) == message_id:
+                    return page, slot
+        return None
+
+    def mark_sms_read(self, message_id: int) -> bool:
+        located = self._locate_sms(message_id)
+        if located is None:
+            return False
+        page, slot = located
+        try:
+            self._lib.req_act([
+                self._lib.ActItem(
+                    self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX",
+                    attrs=[f'"PageNumber":"{page}"'],
+                ),
+                self._lib.ActItem(
+                    self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGENTRY",
+                    f"{slot},0,0,0,0,0", attrs=['"unread":"0"'],
+                ),
+            ])
+        except OSError as e:
+            raise ConnectionError(str(e)) from e
+        return True
+
+    # No router-side delete: the M8550 EX firmware rejects `del` on
+    # DEV2_LTE_SMS_RECVMSGENTRY (errorcode 71011) and there's no settable attr
+    # we found that removes a message. The poller handles "delete" actions as
+    # a local soft-hide instead — see Store.hide_sms_local().
 
     def _fetch_all(self):
         lte = self._lib.get_lte_status()

@@ -500,6 +500,65 @@ def test_list_sms_aggregates_all_pages():
         )
 
 
+def test_mark_sms_read_locates_slot_then_sets_unread_zero():
+    """The router-side slot of an SMS depends on which page it's on, and slots
+    shift when other messages are deleted. The client must walk pages to
+    locate the target's (page, slot), then SET unread=0 against that slot
+    using the JSON-quoted attr that survives the EX serializer."""
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.DEL = "del"
+
+    page1 = [{"index": "25"}, {"index": "24"}, {"index": "23"}]
+    page2 = [{"index": "10"}, {"index": "9"}, {"index": "8"}, {"index": "7"}]
+    # locate() consumes one req_act per page until it finds id=8 on page 2,
+    # then mark_sms_read() makes one more req_act for the SET.
+    fake_lib.req_act.side_effect = [
+        ("raw", [page1]),
+        ("raw", [page2]),
+        ("raw", [[]]),  # SET response — no data field, locate doesn't reach
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    assert client.mark_sms_read(8) is True
+
+    # Inspect the final req_act call — it must SET the target page first then
+    # SET unread=0 at the located slot (id=8 is the 3rd row on page 2).
+    final_call = fake_lib.req_act.call_args_list[-1]
+    acts = final_call.args[0]
+    assert len(acts) == 2
+    set_page_call, set_unread_call = (
+        fake_lib.ActItem.call_args_list[-2],
+        fake_lib.ActItem.call_args_list[-1],
+    )
+    assert set_page_call.args == ("so", "DEV2_LTE_SMS_RECVMSGBOX")
+    assert any('"PageNumber":"2"' in a for a in set_page_call.kwargs["attrs"])
+    assert set_unread_call.args == ("so", "DEV2_LTE_SMS_RECVMSGENTRY", "3,0,0,0,0,0")
+    assert any('"unread":"0"' in a for a in set_unread_call.kwargs["attrs"])
+
+
+def test_mark_sms_read_returns_false_when_message_not_found():
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.side_effect = [
+        ("raw", [[{"index": "1"}]]),
+        ("raw", [[]]),  # second page empty → end of walk
+    ]
+    client = LibRouterClient(_lib=fake_lib)
+    assert client.mark_sms_read(99) is False
+    # No SET-unread should have happened.
+    set_unread_calls = [
+        c for c in fake_lib.ActItem.call_args_list
+        if c.args and c.args[0] == "so" and len(c.args) >= 2
+        and c.args[1] == "DEV2_LTE_SMS_RECVMSGENTRY"
+    ]
+    assert set_unread_calls == []
+
+
 def test_list_sms_stops_after_max_pages_on_repeating_router():
     """Defensive: if the router ignores PageNumber and keeps returning the
     same page (older firmware behaviour we observed pre-fix), iteration must

@@ -153,12 +153,19 @@ export function listSms(): { messages: SmsMessage[]; syncedAt: number } {
     .get()
   if (!exists) return { messages: [], syncedAt: 0 }
 
-  const rows = db
-    .prepare(
-      "SELECT id, sender, content, received_at, unread, synced_at FROM sms_messages " +
-      "ORDER BY received_at DESC, id DESC",
-    )
-    .all() as SmsRow[]
+  // LEFT JOIN sms_hidden so soft-hidden ids stay out of the user-facing list.
+  // The table may not exist on older databases — coalesce via a defensive guard.
+  const hiddenTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sms_hidden'")
+    .get()
+  const query = hiddenTable
+    ? "SELECT m.id, m.sender, m.content, m.received_at, m.unread, m.synced_at " +
+      "FROM sms_messages m LEFT JOIN sms_hidden h ON h.sms_id = m.id " +
+      "WHERE h.sms_id IS NULL " +
+      "ORDER BY m.received_at DESC, m.id DESC"
+    : "SELECT id, sender, content, received_at, unread, synced_at FROM sms_messages " +
+      "ORDER BY received_at DESC, id DESC"
+  const rows = db.prepare(query).all() as SmsRow[]
   const messages = rows.map((r) => ({
     id: r.id,
     sender: r.sender,

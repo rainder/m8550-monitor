@@ -262,3 +262,121 @@ def test_append_sample_offline_keeps_wan_status_null(tmp_path):
         "SELECT sig_level, rsrp, isp_name, cpu_pct, mem_pct FROM samples"
     ).fetchone()
     assert row == (None, None, None, None, None)
+
+
+def _sms_message(id, sender="X", content="hi", received_at=100, unread=False):
+    from m8550_collector.router import SmsMessage
+    return SmsMessage(
+        id=id, sender=sender, content=content,
+        received_at=received_at, unread=unread,
+    )
+
+
+def test_enqueue_sms_action_then_pending_returns_fifo_order(tmp_path):
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    s.enqueue_sms_action(sms_id=25, action="mark_read", created_at=10)
+    s.enqueue_sms_action(sms_id=24, action="delete",    created_at=11)
+    s.enqueue_sms_action(sms_id=23, action="mark_read", created_at=12)
+
+    pending = s.pending_sms_actions()
+    assert [(p["sms_id"], p["action"]) for p in pending] == [
+        (25, "mark_read"), (24, "delete"), (23, "mark_read"),
+    ]
+    assert all(isinstance(p["id"], int) for p in pending)
+
+
+def test_enqueue_sms_action_rejects_unknown_action(tmp_path):
+    import pytest
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    with pytest.raises(ValueError):
+        s.enqueue_sms_action(sms_id=1, action="forward", created_at=10)
+
+
+def test_delete_sms_action_removes_only_that_row(tmp_path):
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    a = s.enqueue_sms_action(sms_id=1, action="mark_read", created_at=10)
+    b = s.enqueue_sms_action(sms_id=2, action="delete",    created_at=11)
+
+    s.delete_sms_action(a)
+    remaining = s.pending_sms_actions()
+    assert [r["id"] for r in remaining] == [b]
+
+
+def test_mark_sms_read_local_updates_only_target_row(tmp_path):
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    s.replace_sms(ts=100, messages=[
+        _sms_message(id=1, unread=True),
+        _sms_message(id=2, unread=True),
+    ])
+    s.mark_sms_read_local(sms_id=1)
+    rows = {r["id"]: r["unread"] for r in s.list_sms()}
+    assert rows == {1: False, 2: True}
+
+
+def test_hide_sms_local_excludes_id_from_list_sms(tmp_path):
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    s.replace_sms(ts=100, messages=[
+        _sms_message(id=1),
+        _sms_message(id=2),
+    ])
+    s.hide_sms_local(sms_id=1)
+    assert [r["id"] for r in s.list_sms()] == [2]
+
+
+def test_hide_sms_local_survives_router_resync(tmp_path):
+    """The router keeps re-sending the same id every poll; the hide tombstone
+    must persist across replace_sms so the user doesn't see the message come
+    back."""
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    s.replace_sms(ts=100, messages=[_sms_message(id=1), _sms_message(id=2)])
+    s.hide_sms_local(sms_id=1)
+
+    # Second poll: router still reports both messages — hidden one stays gone.
+    s.replace_sms(ts=200, messages=[_sms_message(id=1), _sms_message(id=2)])
+    assert [r["id"] for r in s.list_sms()] == [2]
+
+
+def test_replace_sms_clears_hidden_tombstone_when_id_no_longer_on_router(tmp_path):
+    """If the router itself loses the message (deleted via Tether, etc.), the
+    tombstone is stale — drop it so a future message landing in the same id
+    slot won't be silently hidden."""
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    s.replace_sms(ts=100, messages=[_sms_message(id=1)])
+    s.hide_sms_local(sms_id=1)
+
+    # Router now reports id=2 only; id=1 is gone.
+    s.replace_sms(ts=200, messages=[_sms_message(id=2)])
+
+    # A later, unrelated message landing in id=1's old slot should be visible.
+    s.replace_sms(ts=300, messages=[
+        _sms_message(id=1, sender="NEW", content="reuse"),
+        _sms_message(id=2),
+    ])
+    visible = {r["id"]: r["sender"] for r in s.list_sms()}
+    assert visible == {1: "NEW", 2: "X"}
+
+
+def test_replace_sms_skips_push_for_hidden_id(tmp_path):
+    """Hidden ids must not appear in the "new arrivals" set returned to the
+    pusher, even if they're absent from sms_messages between polls."""
+    s = Store(str(tmp_path / "t.db"))
+    s.init_schema()
+    # Seed cache so the first-sync gate doesn't suppress everything.
+    s.replace_sms(ts=100, messages=[_sms_message(id=1)])
+    s.hide_sms_local(sms_id=1)
+
+    # Router re-mirrors the same id. Without the hidden-skip the row would
+    # currently NOT look new (prev_ids has it). Add a fresh id=99 to confirm
+    # genuinely-new pushes still fire alongside hidden suppression.
+    arrived = s.replace_sms(ts=200, messages=[
+        _sms_message(id=1),
+        _sms_message(id=99, sender="NEW"),
+    ])
+    assert [m.id for m in arrived] == [99]

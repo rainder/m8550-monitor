@@ -105,6 +105,30 @@ export default function Page() {
             messages={sms.messages}
             unreadCount={sms.unreadCount}
             syncedAt={sms.syncedAt}
+            onMarkRead={(id) =>
+              setSms((s) => {
+                if (!s) return s
+                const messages = s.messages.map((m) =>
+                  m.id === id ? { ...m, unread: false } : m,
+                )
+                return {
+                  ...s,
+                  messages,
+                  unreadCount: messages.filter((m) => m.unread).length,
+                }
+              })
+            }
+            onDelete={(id) =>
+              setSms((s) => {
+                if (!s) return s
+                const messages = s.messages.filter((m) => m.id !== id)
+                return {
+                  ...s,
+                  messages,
+                  unreadCount: messages.filter((m) => m.unread).length,
+                }
+              })
+            }
           />
         )}
 
