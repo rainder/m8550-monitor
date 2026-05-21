@@ -198,7 +198,7 @@ class LibRouterClient:
         _lib=None,
         *,
         auth_backoff_seconds: int = 300,
-        stale_session_threshold: int = 4,
+        stale_session_threshold: int = 1,
         busy_probe: Callable[[], bool] | None = None,
         _now: Callable[[], int] = lambda: int(time.time()),
     ):
@@ -268,11 +268,13 @@ class LibRouterClient:
         try:
             lte, status, stat_rows = self._fetch_all()
         except OSError as e:
-            # The M8550 doesn't always 401 a kicked session — sometimes it just
-            # resets the connection (RemoteDisconnected). Those look like
-            # network errors. Tolerate a few in a row as genuine transient
-            # blips; once the count hits the threshold the session is most
-            # likely stale and worth one reauth attempt.
+            # The M8550 expires our session on a ~10 min hard timer and
+            # signals it with TCP RST (RemoteDisconnected) rather than 401.
+            # The first RST during a healthy session is almost always that
+            # timeout, so by default we reauth immediately (threshold=1).
+            # The threshold is configurable for callers who genuinely want to
+            # debounce — set STALE_SESSION_THRESHOLD>1 if your network throws
+            # benign blips and you'd rather skip them than reauth.
             self._consecutive_oserrors += 1
             if self._consecutive_oserrors < self._stale_session_threshold:
                 raise ConnectionError(str(e)) from e

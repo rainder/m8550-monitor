@@ -223,19 +223,23 @@ def test_snapshot_session_loss_triggers_auth_backoff_instead_of_reauth():
     fake_lib.get_lte_status.assert_not_called()
 
 
-def test_snapshot_oserror_does_not_arm_auth_backoff():
-    """A socket-level failure is a network blip, not a session-kick. The
-    collector should report it as ConnectionError and keep polling normally."""
+def test_snapshot_oserror_below_threshold_does_not_arm_auth_backoff():
+    """A single OSError below the configured stale-session threshold is
+    treated as a transient network blip — surfaced as ConnectionError, but no
+    cooldown is armed and no reauth is attempted."""
     fake_lib = MagicMock()
     fake_lib.get_lte_status.side_effect = OSError("connection refused")
 
-    client = LibRouterClient(_lib=fake_lib, auth_backoff_seconds=300)
+    client = LibRouterClient(
+        _lib=fake_lib, auth_backoff_seconds=300, stale_session_threshold=4,
+    )
     with pytest.raises(ConnectionError):
         client.snapshot()
 
     # No cooldown armed — next snapshot would still try to fetch, not
     # short-circuit with an AuthError.
     assert client._kicked_until is None
+    fake_lib.authorize.assert_not_called()
 
 
 def test_snapshot_reclaims_session_after_backoff_elapses():
@@ -320,6 +324,35 @@ def test_repeated_oserrors_trigger_self_heal_reauth():
     assert snap.total_bytes == 1
     fake_lib.authorize.assert_called_once()
     # Counter reset after success.
+    assert client._consecutive_oserrors == 0
+
+
+def test_threshold_one_reauths_on_first_oserror_no_offline_tick():
+    """With threshold=1 (the production default) the M8550's ~10-min hard
+    session timeout doesn't show up as a downtime gap: the very first RST
+    triggers reauth+refetch in the same snapshot call, which succeeds and
+    returns data. No ConnectionError is observed by the poller."""
+    fake_lib = MagicMock()
+
+    lte = MagicMock()
+    lte.total_statistics = 42; lte.cur_rx_speed = 0; lte.cur_tx_speed = 0
+    lte.sig_level = 4; lte.isp_name = "Bite"
+    status = MagicMock()
+    status.devices = []; status.cpu_usage = 0; status.mem_usage = 0
+
+    fake_lib.get_lte_status.side_effect = [
+        OSError("reset"),  # first error: threshold=1 triggers reauth path
+        lte,               # refetch succeeds
+    ]
+    fake_lib.get_status.return_value = status
+    fake_lib.ActItem = MagicMock(); fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.return_value = ("raw", [[]])
+
+    client = LibRouterClient(_lib=fake_lib, stale_session_threshold=1)
+
+    snap = client.snapshot()
+    assert snap.total_bytes == 42
+    fake_lib.authorize.assert_called_once()
     assert client._consecutive_oserrors == 0
 
 

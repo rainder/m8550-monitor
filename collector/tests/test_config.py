@@ -40,7 +40,7 @@ def test_load_config_default_interval(monkeypatch):
 
     assert cfg.poll_interval == 5
     assert cfg.auth_backoff_seconds == 300
-    assert cfg.stale_session_threshold == 4
+    assert cfg.stale_session_threshold == 1
     assert cfg.sms_poll_interval == 60
 
 

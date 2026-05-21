@@ -88,8 +88,13 @@ would just kick Tether right back. Don't shorten the backoff without a real
 reason.
 
 A second flavour of session loss surfaces as TCP RST (`OSError`) instead of
-401. We tolerate `stale_session_threshold` (default 4) consecutive `OSError`s
-before treating it as session-lost and triggering one reauth attempt.
+401. The M8550 expires our session on a **~10 minute hard timer** regardless
+of activity (we poll every 5s — still gets kicked), so RST during a healthy
+session is almost always that timeout. Default `stale_session_threshold=1`:
+the first RST triggers reauth+refetch in the same snapshot call, usually
+returns data, and the user sees no offline gap at all. Set
+`STALE_SESSION_THRESHOLD>1` only if your network actually throws benign
+blips that you'd rather skip than reauth on.
 
 #### Polite login: probe `/cgi/getBusy` first
 
