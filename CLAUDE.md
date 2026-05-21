@@ -99,15 +99,23 @@ Semantics observed on this firmware:
 
 | State                                | Response                                            |
 |--------------------------------------|-----------------------------------------------------|
-| Nobody is logged in                  | `200` body has `isBusy=0`                           |
+| Nobody is logged in                  | `200` body has `isLogined=0` and `isBusy=0`         |
 | Someone else is logged in            | `200` body has `isLogined=1` and `isBusy=1`         |
+| **Phantom lock** (firmware bug)      | `200` body has `isLogined=0` and `isBusy=1`         |
 | We probed with our own JSESSIONID    | `406 Not Acceptable`                                |
 
-If `isBusy=1` we arm the cooldown and raise `AuthError` instead of calling
+We treat the slot as busy **only when both** `isLogined=1` and `isBusy=1`.
+The "phantom lock" state is a firmware bug: the previous session ended but
+`isBusy` never cleared. Originally we only inspected `isBusy=1`, which stranded
+the collector for 10h+ waiting on a session that didn't exist. There's
+nothing to be polite to when `isLogined=0`, so we authorise.
+
+When busy, we arm the cooldown and raise `AuthError` instead of calling
 `authorize()` — exactly the polite behaviour the router's own web UI
 implements via its "kick existing session?" popup. The probe is module-level
 `_router_busy(host)` in `router.py`; tests inject a `busy_probe` callable into
-`LibRouterClient` to avoid live network calls.
+`LibRouterClient` to avoid live network calls, plus unit tests cover the
+parser directly so the phantom case can't regress.
 
 The login endpoint itself **does not** signal contention — `Action: "1"` is
 the only working value and it always succeeds, silently kicking any prior

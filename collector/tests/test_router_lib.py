@@ -8,7 +8,9 @@ from m8550_collector.router import (
     RouterClientSnapshot,
     RouterSnapshot,
     WanStatus,
+    _router_busy,
 )
+from m8550_collector import router as router_mod
 
 
 def _device(mac, name, ip, conn_value):
@@ -371,6 +373,61 @@ def test_successful_snapshot_resets_oserror_counter():
     with pytest.raises(ConnectionError): client.snapshot()
     # Reauth must NOT have triggered — the success reset the counter.
     fake_lib.authorize.assert_not_called()
+
+
+class _FakeResp:
+    def __init__(self, text: str, status_code: int = 200):
+        self.text = text
+        self.status_code = status_code
+
+
+def test_router_busy_real_contention(monkeypatch):
+    """Genuine state — someone else is logged in. We must back off."""
+    monkeypatch.setattr(
+        router_mod.requests, "post",
+        lambda *a, **k: _FakeResp("var isLogined=1;\nvar isBusy=1;\n$.ret=0;\n"),
+    )
+    assert _router_busy("http://192.168.1.1") is True
+
+
+def test_router_busy_idle():
+    """Nobody logged in, lock clean — authorise."""
+    def fake_post(*a, **k):
+        return _FakeResp("var isLogined=0;\nvar isBusy=0;\n$.ret=0;\n")
+    import unittest.mock as um
+    with um.patch.object(router_mod.requests, "post", fake_post):
+        assert _router_busy("http://192.168.1.1") is False
+
+
+def test_router_busy_phantom_lock_with_no_session(monkeypatch):
+    """The actual bug we hit: router answers ``isLogined=0; isBusy=1`` — the
+    auth lock stuck after the previous session ended and the firmware never
+    cleared it. Treating that as ``busy`` strands the collector waiting on a
+    phantom session forever (observed: 10h stuck). With nobody logged in
+    there's nothing to be polite to, so authorise."""
+    monkeypatch.setattr(
+        router_mod.requests, "post",
+        lambda *a, **k: _FakeResp("var isLogined=0;\nvar isBusy=1;\n$.ret=0;\n"),
+    )
+    assert _router_busy("http://192.168.1.1") is False
+
+
+def test_router_busy_we_own_session_returns_not_busy(monkeypatch):
+    """406 means we sent a probe with our own JSESSIONID and the router
+    refused — i.e. we already own the slot. Definitely not busy."""
+    monkeypatch.setattr(
+        router_mod.requests, "post",
+        lambda *a, **k: _FakeResp("", status_code=406),
+    )
+    assert _router_busy("http://192.168.1.1") is False
+
+
+def test_router_busy_network_error_fails_open(monkeypatch):
+    """A flaky probe must not freeze the collector. Better to attempt login."""
+    def boom(*a, **k):
+        raise OSError("connection refused")
+    monkeypatch.setattr(router_mod.requests, "post", boom)
+    assert _router_busy("http://192.168.1.1") is False
 
 
 def test_safe_authorize_skips_login_when_router_busy(monkeypatch):

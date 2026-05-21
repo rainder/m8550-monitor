@@ -142,9 +142,13 @@ def _router_busy(host: str, timeout: float = 5.0) -> bool:
     to decide whether to show its "kick existing session?" popup.
 
     Response semantics (observed on M8550 firmware):
-      - HTTP 200 with body containing ``isBusy=1`` → someone else is logged in
-      - HTTP 200 with body containing ``isBusy=0`` → nobody is logged in
-      - HTTP 406 → we already own the session (probe sent our own JSESSIONID)
+      - ``isLogined=1`` and ``isBusy=1``  → someone else holds the slot; busy.
+      - ``isLogined=0`` and ``isBusy=0``  → idle; safe to authorise.
+      - ``isLogined=0`` and ``isBusy=1``  → phantom lock — the previous session
+        ended but the firmware never cleared ``isBusy``. Treating this as busy
+        strands the collector forever (observed: 10h stuck), so we require
+        ``isLogined=1`` to call it real contention.
+      - HTTP 406 → we already own the session (probe sent our own JSESSIONID).
       - anything else (network error, parse failure) → fail open and return
         False; better to attempt the login than freeze the collector based
         on an unreliable signal.
@@ -160,7 +164,7 @@ def _router_busy(host: str, timeout: float = 5.0) -> bool:
         return False
     if r.status_code != 200:
         return False
-    return "isBusy=1" in r.text
+    return "isLogined=1" in r.text and "isBusy=1" in r.text
 
 
 def _parse_received_time(s) -> int | None:
