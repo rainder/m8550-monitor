@@ -73,11 +73,28 @@ application-level rejection. `SET deleted=1`, `OP …`, `SET deleteMsg=…` on
 `RECVMSGBOX`, and every `/cgi/sms_*` path we tried also fail. Captured with a
 raw socket call if you want to verify.
 
-So "delete" in this app is a **local soft-hide** via the `sms_hidden(sms_id)`
-table — `list_sms()` (both collector and web) LEFT JOINs it out. The button is
-labelled "Hide" with a tooltip explaining the firmware limit. Don't try to
-make it a real delete without first finding what the M8550 web UI itself does
-(probably via SPA-bundled JS we couldn't fetch without proper SPA auth).
+The earlier "local soft-hide" workaround (an `sms_hidden(sms_id)` tombstone
+table that `list_sms()` LEFT JOINed out) was removed in favour of
+**unread-by-default**: the SMS panel filters to unread messages, so the
+inbox naturally curates itself once the user (or the "Mark all read" button)
+clears the unread flag. There's a "Show all" toggle to reveal read history.
+The `sms_hidden` table is `DROP TABLE IF EXISTS`-ed on collector startup as
+a one-time migration. If you re-introduce any kind of delete, audit the
+mirror logic in `Store.replace_sms` for tombstone-resurrection bugs first —
+the original implementation cleared tombstones whose id was absent from
+`router_ids`, which interacted badly with the partial-page-fetch bug below.
+
+### `list_sms()` verifies `totalNumber` to avoid silent partial fetches
+
+Before walking pages, `list_sms()` reads `totalNumber` from
+`GET DEV2_LTE_SMS_RECVMSGBOX` and raises `ConnectionError` if the collected
+page-walk count doesn't match. Without this guard a transient mid-iteration
+empty page produced a strict subset of the inbox; `replace_sms` then shrank
+the cache and the next successful poll fired push notifications for every
+"missing" id (and, with the old soft-hide, also wiped tombstones so hidden
+messages reappeared). Failing closed leaves the cache untouched until the
+next clean poll. Older firmware without `totalNumber` falls back to trusting
+the page walk — better than freezing the SMS feature forever.
 
 ### Single-session contention
 
@@ -142,11 +159,12 @@ the local DB instead.
   things only the web side touches — `push_subscriptions`
   (`web/lib/push-db.ts`) and `sms_actions` (`web/lib/sms-db.ts`).
 - `Store.replace_sms()` does a full DELETE+INSERT mirror of the router inbox
-  each poll. It also (a) preserves `sms_hidden` tombstones across polls, and
-  (b) clears tombstones whose id is no longer on the router so future
-  slot-reuse doesn't silently hide a new message.
-- Push-notify `new_messages` calculation deliberately filters out hidden ids,
-  so a hidden-but-still-on-router message doesn't ping every re-mirror.
+  each poll, returning the set of ids that weren't in the cache before so
+  the caller can push-notify on genuine arrivals. The first-ever sync (cache
+  empty) returns `[]` so installing the feature doesn't notify on the
+  existing backlog. Combined with the `totalNumber` guard in `list_sms()`,
+  the cache never shrinks below the router's real inbox count — so a
+  shrink-and-recover cycle can't fabricate "new" arrivals.
 
 ## Action queue (user-initiated SMS mutations)
 
@@ -154,16 +172,37 @@ Web → `sms_actions(id, sms_id, action, created_at)` → collector drains in
 `Poller._process_sms_actions()` at the **start of every 5s tick**. Two
 actions:
 
-- `mark_read` → `router.mark_sms_read(id)` (walks pages to locate slot,
-  SET unread=0).
-- `delete` → `store.hide_sms_local(id)` — no router call.
+- `mark_read` (per-id) → `router.mark_sms_read(id)` walks pages to locate
+  the slot then SETs `unread=0`. Local cache mirrored on success.
+- `mark_all_read` (inbox-wide; uses `sms_id=0` as a sentinel) →
+  `router.mark_all_sms_read()` walks pages once and bundles a SET-page +
+  one SET-unread-0 per unread slot into a single `req_act` per page (one
+  round-trip per page rather than per message). Then
+  `Store.mark_all_sms_read_local()` clears all `unread=1` rows so the UI
+  doesn't lag the ~60s SMS poll. There's a tiny race window between the
+  per-page GL and bulk-SET where a new arrival could shift slot positions
+  and get marked as read; treat as accepted trade-off — the user can
+  always re-press, and the alternative (re-locating per id) costs N page
+  walks.
 
 Transient errors (`AuthError`/`ConnectionError`) keep the row queued; anything
-else logs and drops the row so a poisoned action can't loop forever. (Earlier
-we *did* call `router.delete_sms` for the delete action; that produced a
-runaway retry storm because the firmware rejects DEL with a transport-level
-error. If you re-introduce a router-side path, make sure failure modes
-fast-fail rather than re-queue.)
+else logs and drops the row so a poisoned action can't loop forever.
+
+`web/lib/db.ts:listSms()` JOINs against the pending `sms_actions` queue and
+treats any row with a queued `mark_read` (or any queued `mark_all_read`) as
+already-read in the response. Without this, the optimistic client-side hide
+flips back on the next `/api/sms` poll while the collector is waiting out an
+auth-backoff cycle — message hides, then reappears as unread until the
+collector finally drains the queue. Reflecting intent in the API keeps the
+UI consistent regardless of collector backlog. If the action ultimately
+fails and gets dropped without taking effect on the router, the next inbox
+poll re-mirrors `unread=1` and the UI corrects itself.
+
+Earlier there was a `delete` action that called the (removed) local
+`Store.hide_sms_local`; an even earlier attempt called `router.delete_sms`
+which produced a runaway retry storm because the firmware rejects DEL with
+a transport-level error. If you re-introduce any router-side delete path,
+make sure failure modes fast-fail rather than re-queue.
 
 ## Testing patterns
 
@@ -178,11 +217,14 @@ fast-fail rather than re-queue.)
 
 ## Recent context
 
-- The SMS feature shipped in three steps: pagination fix (`4d7b324`),
-  mark-read + hide actions (`aec62d1`), web pagination at 8/page (`9ff6369`).
-  Earlier delete attempts left ~17 stuck "delete" actions in `sms_actions`
-  during testing — they're cleared. If you see a stuck queue again, clear it
-  with `DELETE FROM sms_actions` (rare, only happens if a router call
-  permanently fails for some reason).
+- The SMS feature shipped in stages: pagination fix (`4d7b324`),
+  mark-read + hide actions (`aec62d1`), web pagination at 8/page (`9ff6369`),
+  then the soft-hide path was scrapped for **unread-by-default + mark-all-read**
+  after the user reported spurious push notifications and hidden messages
+  reappearing. Root cause: a transient mid-iteration empty page made
+  `list_sms()` return a strict subset of the inbox, which then (a) shrank
+  the cache, fabricating "new" arrivals on recovery, and (b) wiped
+  `sms_hidden` tombstones whose ids "vanished", un-hiding them. Fixed by
+  validating against `totalNumber` and removing the soft-hide entirely.
 - The user is in Lithuania (LABAS carrier — Bitė Lietuva). Test SMS often come
   through as Lithuanian-language promotional messages.

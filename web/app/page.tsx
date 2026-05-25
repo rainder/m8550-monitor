@@ -119,15 +119,13 @@ export default function Page() {
                 }
               })
             }
-            onDelete={(id) =>
+            onMarkAllRead={() =>
               setSms((s) => {
                 if (!s) return s
-                const messages = s.messages.filter((m) => m.id !== id)
-                return {
-                  ...s,
-                  messages,
-                  unreadCount: messages.filter((m) => m.unread).length,
-                }
+                const messages = s.messages.map((m) =>
+                  m.unread ? { ...m, unread: false } : m,
+                )
+                return { ...s, messages, unreadCount: 0 }
               })
             }
           />

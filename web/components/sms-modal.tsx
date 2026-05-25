@@ -8,11 +8,10 @@ type Props = {
   message: SmsMessage
   onClose: () => void
   onMarkRead: (id: number) => void
-  onDelete: (id: number) => void
 }
 
-export function SmsModal({ message, onClose, onMarkRead, onDelete }: Props) {
-  const [pending, setPending] = useState<"read" | "delete" | null>(null)
+export function SmsModal({ message, onClose, onMarkRead }: Props) {
+  const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -24,7 +23,7 @@ export function SmsModal({ message, onClose, onMarkRead, onDelete }: Props) {
   }, [onClose])
 
   async function handleMarkRead() {
-    setPending("read")
+    setPending(true)
     setError(null)
     try {
       const r = await fetch(`/api/sms/${message.id}/read`, { method: "POST" })
@@ -33,21 +32,7 @@ export function SmsModal({ message, onClose, onMarkRead, onDelete }: Props) {
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to mark read")
-      setPending(null)
-    }
-  }
-
-  async function handleHide() {
-    setPending("delete")
-    setError(null)
-    try {
-      const r = await fetch(`/api/sms/${message.id}`, { method: "DELETE" })
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      onDelete(message.id)
-      onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to hide")
-      setPending(null)
+      setPending(false)
     }
   }
 
@@ -97,32 +82,21 @@ export function SmsModal({ message, onClose, onMarkRead, onDelete }: Props) {
           {message.content || <span className="text-zinc-500 italic">(empty message)</span>}
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-[var(--color-border)] px-5 py-3">
-          <span className="min-w-0 truncate text-[10px] font-mono text-rose-400">
-            {error}
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            {message.unread && (
-              <button
-                type="button"
-                onClick={handleMarkRead}
-                disabled={pending !== null}
-                className="rounded-sm border border-[var(--color-border)] bg-transparent px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider text-zinc-300 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {pending === "read" ? "…" : "Mark read"}
-              </button>
-            )}
+        {message.unread && (
+          <div className="flex items-center justify-between gap-3 border-t border-[var(--color-border)] px-5 py-3">
+            <span className="min-w-0 truncate text-[10px] font-mono text-rose-400">
+              {error}
+            </span>
             <button
               type="button"
-              onClick={handleHide}
-              disabled={pending !== null}
-              title="Hide from this dashboard. M8550 firmware doesn't support remote delete — the message stays on the router."
-              className="rounded-sm border border-rose-500/30 bg-transparent px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/10 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={handleMarkRead}
+              disabled={pending}
+              className="shrink-0 rounded-sm border border-[var(--color-border)] bg-transparent px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider text-zinc-300 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {pending === "delete" ? "…" : "Hide"}
+              {pending ? "…" : "Mark read"}
             </button>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

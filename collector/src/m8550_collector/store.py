@@ -62,26 +62,20 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 
 CREATE TABLE IF NOT EXISTS sms_actions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    sms_id       INTEGER NOT NULL,
-    action       TEXT NOT NULL,    -- 'mark_read' | 'delete'
+    sms_id       INTEGER NOT NULL,    -- 0 for actions that target the whole inbox (e.g. mark_all_read)
+    action       TEXT NOT NULL,       -- 'mark_read' | 'mark_all_read'
     created_at   INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sms_actions_id ON sms_actions(id);
-
--- M8550 EX firmware rejects DEL on DEV2_LTE_SMS_RECVMSGENTRY (errorcode 71011)
--- and there's no SET attr we could find that removes a message. As a fallback,
--- "delete" is a local soft-hide: we record the id here and exclude it from
--- list_sms() forever. The message stays on the router itself.
-CREATE TABLE IF NOT EXISTS sms_hidden (
-    sms_id INTEGER PRIMARY KEY
-);
 
 CREATE TABLE IF NOT EXISTS router_actions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     action     TEXT NOT NULL,     -- 'reauth'
     created_at INTEGER NOT NULL
 );
+
+DROP TABLE IF EXISTS sms_hidden;
 """
 
 
@@ -188,18 +182,10 @@ class Store:
         push-notify on. Treats the first-ever sync (cache empty) as having
         no new messages so that adding the feature doesn't notify on the
         existing inbox backlog.
-
-        Also reconciles sms_hidden: tombstones whose id is no longer on the
-        router get cleared, so that a later message landing in a reused slot
-        won't be silently hidden.
         """
-        router_ids = {m.id for m in messages}
         with self._connect() as conn:
             prev_ids: set[int] = {
                 row[0] for row in conn.execute("SELECT id FROM sms_messages")
-            }
-            hidden_ids: set[int] = {
-                row[0] for row in conn.execute("SELECT sms_id FROM sms_hidden")
             }
             had_cache_before = bool(prev_ids)
             conn.execute("DELETE FROM sms_messages")
@@ -212,18 +198,9 @@ class Store:
                     for m in messages
                 ],
             )
-            stale_hidden = hidden_ids - router_ids
-            if stale_hidden:
-                conn.executemany(
-                    "DELETE FROM sms_hidden WHERE sms_id = ?",
-                    [(i,) for i in stale_hidden],
-                )
         if not had_cache_before:
             return []
-        return [
-            m for m in messages
-            if m.id not in prev_ids and m.id not in hidden_ids
-        ]
+        return [m for m in messages if m.id not in prev_ids]
 
     def list_push_subscriptions(self) -> list[dict]:
         with self._connect() as conn:
@@ -257,11 +234,9 @@ class Store:
     def list_sms(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT m.id, m.sender, m.content, m.received_at, m.unread, m.synced_at "
-                "FROM sms_messages m "
-                "LEFT JOIN sms_hidden h ON h.sms_id = m.id "
-                "WHERE h.sms_id IS NULL "
-                "ORDER BY m.received_at DESC, m.id DESC"
+                "SELECT id, sender, content, received_at, unread, synced_at "
+                "FROM sms_messages "
+                "ORDER BY received_at DESC, id DESC"
             ).fetchall()
         return [
             {
@@ -275,14 +250,8 @@ class Store:
             for r in rows
         ]
 
-    def hide_sms_local(self, sms_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO sms_hidden (sms_id) VALUES (?)", (sms_id,),
-            )
-
     def enqueue_sms_action(self, sms_id: int, action: str, created_at: int) -> int:
-        if action not in ("mark_read", "delete"):
+        if action not in ("mark_read", "mark_all_read"):
             raise ValueError(f"unknown sms action: {action!r}")
         with self._connect() as conn:
             cur = conn.execute(
@@ -332,6 +301,10 @@ class Store:
             conn.execute(
                 "UPDATE sms_messages SET unread = 0 WHERE id = ?", (sms_id,),
             )
+
+    def mark_all_sms_read_local(self) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE sms_messages SET unread = 0 WHERE unread = 1")
 
     def latest_sample(self) -> dict | None:
         with self._connect() as conn:

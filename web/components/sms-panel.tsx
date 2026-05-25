@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 
 import { SmsModal } from "@/components/sms-modal"
 import type { SmsMessage } from "@/lib/types"
@@ -12,34 +12,71 @@ type Props = {
   unreadCount: number
   syncedAt: number   // unix seconds; 0 when never synced
   onMarkRead: (id: number) => void
-  onDelete: (id: number) => void
+  onMarkAllRead: () => void
 }
 
-export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete }: Props) {
+export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onMarkAllRead }: Props) {
   const [openId, setOpenId] = useState<number | null>(null)
   const [page, setPage] = useState(1)
+  const [showRead, setShowRead] = useState(false)
+  const [markingAll, setMarkingAll] = useState(false)
+  const [markAllError, setMarkAllError] = useState<string | null>(null)
+
+  const filtered = useMemo(
+    () => (showRead ? messages : messages.filter((m) => m.unread)),
+    [messages, showRead],
+  )
 
   if (syncedAt === 0 && messages.length === 0) {
     // Never synced yet — silently hide so old DBs don't render an empty section.
     return null
   }
 
-  const totalPages = Math.max(1, Math.ceil(messages.length / PAGE_SIZE))
-  // Clamp in case messages shrunk (hide/delete) while we were on a later page.
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages)
   const pageStart = (currentPage - 1) * PAGE_SIZE
-  const pageMessages = messages.slice(pageStart, pageStart + PAGE_SIZE)
-  const rangeStart = messages.length === 0 ? 0 : pageStart + 1
+  const pageMessages = filtered.slice(pageStart, pageStart + PAGE_SIZE)
+  const rangeStart = filtered.length === 0 ? 0 : pageStart + 1
   const rangeEnd = pageStart + pageMessages.length
 
   const open = openId !== null ? messages.find((m) => m.id === openId) ?? null : null
 
+  async function handleMarkAllRead() {
+    if (unreadCount === 0 || markingAll) return
+    setMarkingAll(true)
+    setMarkAllError(null)
+    try {
+      const r = await fetch("/api/sms/mark-all-read", { method: "POST" })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      onMarkAllRead()
+    } catch (e) {
+      setMarkAllError(e instanceof Error ? e.message : "Failed")
+    } finally {
+      setMarkingAll(false)
+    }
+  }
+
+  function toggleShowRead() {
+    setShowRead((v) => !v)
+    setPage(1)
+  }
+
+  const emptyLabel = showRead ? "Inbox empty" : "No unread messages"
+
   return (
     <>
-      <Section count={messages.length} unreadCount={unreadCount}>
-        {messages.length === 0 ? (
+      <Section
+        total={messages.length}
+        unreadCount={unreadCount}
+        showRead={showRead}
+        onToggleShowRead={toggleShowRead}
+        onMarkAllRead={handleMarkAllRead}
+        markingAll={markingAll}
+        markAllError={markAllError}
+      >
+        {filtered.length === 0 ? (
           <div className="px-5 py-8 text-center text-xs text-zinc-500 font-mono">
-            Inbox empty
+            {emptyLabel}
           </div>
         ) : (
           <ul className="divide-y divide-[var(--color-border)]">
@@ -52,11 +89,11 @@ export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete
             ))}
           </ul>
         )}
-        {messages.length > PAGE_SIZE && (
+        {filtered.length > PAGE_SIZE && (
           <Pager
             rangeStart={rangeStart}
             rangeEnd={rangeEnd}
-            total={messages.length}
+            total={filtered.length}
             page={currentPage}
             totalPages={totalPages}
             onPrev={() => setPage(Math.max(1, currentPage - 1))}
@@ -69,7 +106,6 @@ export function SmsPanel({ messages, unreadCount, syncedAt, onMarkRead, onDelete
           message={open}
           onClose={() => setOpenId(null)}
           onMarkRead={onMarkRead}
-          onDelete={onDelete}
         />
       )}
     </>
@@ -164,15 +200,21 @@ function SmsRow({ message, onClick }: { message: SmsMessage; onClick: () => void
 }
 
 function Section({
-  count, unreadCount, children,
+  total, unreadCount, showRead, onToggleShowRead,
+  onMarkAllRead, markingAll, markAllError, children,
 }: {
-  count: number
+  total: number
   unreadCount: number
+  showRead: boolean
+  onToggleShowRead: () => void
+  onMarkAllRead: () => void
+  markingAll: boolean
+  markAllError: string | null
   children: React.ReactNode
 }) {
   return (
     <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-      <div className="flex items-center justify-between border-b border-[var(--color-border)] px-5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border)] px-5 py-3">
         <div className="flex items-center gap-2">
           <h2 className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 font-mono">
             SMS
@@ -183,9 +225,35 @@ function Section({
             </span>
           )}
         </div>
-        <span className="text-[11px] text-zinc-600 tabular-nums font-mono">
-          {count} total
-        </span>
+        <div className="flex items-center gap-2">
+          {markAllError && (
+            <span className="text-[10px] font-mono text-rose-400">{markAllError}</span>
+          )}
+          {unreadCount > 0 && (
+            <button
+              type="button"
+              onClick={onMarkAllRead}
+              disabled={markingAll}
+              title="Mark every unread message as read on the router"
+              className="rounded-sm border border-[var(--color-border)] px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider text-zinc-300 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {markingAll ? "…" : "Mark all read"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onToggleShowRead}
+            aria-pressed={showRead}
+            className={
+              "rounded-sm border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider transition-colors " +
+              (showRead
+                ? "border-zinc-500/40 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.07]"
+                : "border-[var(--color-border)] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200")
+            }
+          >
+            {showRead ? `All · ${total}` : "Show all"}
+          </button>
+        </div>
       </div>
       {children}
     </div>

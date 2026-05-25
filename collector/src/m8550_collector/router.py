@@ -94,6 +94,11 @@ class RouterClient(Protocol):
         """
         ...
 
+    def mark_all_sms_read(self) -> int:
+        """Mark every currently-unread message as read. Returns count marked.
+        May raise the same exceptions as snapshot()."""
+        ...
+
     def force_reauth(self) -> bool:
         """Clear any active backoff and immediately try to reclaim the router
         session. User-triggered: only call when the user explicitly asks for
@@ -357,7 +362,16 @@ class LibRouterClient:
 
     def list_sms(self) -> list["SmsMessage"]:
         """Fetch the inbox. M8550 paginates at 8 messages/page; iterate until
-        the router returns an empty page.
+        the router returns an empty page, then verify the collected count
+        matches the inbox's ``totalNumber``.
+
+        The totalNumber check guards against silent partial fetches — if a
+        transient empty mid-iteration page makes us return a strict subset,
+        ``replace_sms`` would shrink the cache and the next successful poll
+        would fire spurious "new message" pushes for every dropped id (and,
+        previously, also wipe ``sms_hidden`` tombstones so hidden messages
+        reappeared). Raising ConnectionError on mismatch keeps the cache
+        untouched until the next poll succeeds cleanly.
 
         The PageNumber attr is passed as a pre-quoted JSON fragment because
         tplinkrouterc6u's EX-firmware serializer only quotes attrs that lack
@@ -365,6 +379,7 @@ class LibRouterClient:
         key ``"PageNumber=1":""`` and the SET would silently fail (errorcode
         9007), leaving the GL on whatever page the router happens to be on.
         """
+        expected_total = self._sms_inbox_total()
         out: list[SmsMessage] = []
         seen_ids: set[int] = set()
         for page in range(1, 21):  # 20 pages × 8 = 160 msgs, far above any real inbox
@@ -408,7 +423,32 @@ class LibRouterClient:
                 # Either the page was truly empty or the router ignored
                 # PageNumber and returned a page we've already absorbed.
                 break
+        if expected_total is not None and len(out) != expected_total:
+            raise ConnectionError(
+                f"sms inbox truncated: got {len(out)} messages, totalNumber={expected_total}"
+            )
         return out
+
+    def _sms_inbox_total(self) -> int | None:
+        """Read totalNumber from DEV2_LTE_SMS_RECVMSGBOX. Returns None if the
+        field is unavailable (older firmware, parse failure) so the caller
+        falls back to "trust the page walk"."""
+        try:
+            _, values = self._lib.req_act([self._lib.ActItem(
+                self._lib.ActItem.GET, "DEV2_LTE_SMS_RECVMSGBOX", "1,0,0,0,0,0",
+            )])
+        except OSError as e:
+            raise ConnectionError(str(e)) from e
+        except Exception:
+            return None
+        if not values:
+            return None
+        v = values[0]
+        if isinstance(v, list):
+            v = v[0] if v else {}
+        if not isinstance(v, dict):
+            return None
+        return _safe_int(v.get("totalNumber"))
 
     def _locate_sms(self, message_id: int) -> tuple[int, int] | None:
         """Walk pages until we find the (page, slot) holding ``message_id``.
@@ -460,10 +500,63 @@ class LibRouterClient:
             raise ConnectionError(str(e)) from e
         return True
 
+    def mark_all_sms_read(self) -> int:
+        """Walk the inbox once and SET unread=0 on every unread slot. Returns
+        the count of messages marked. SET ops for a given page are bundled
+        into one request so an inbox with N unread costs roughly one extra
+        round-trip per page rather than per message.
+
+        The router doesn't expose a bulk-mark API, so this is a polite
+        equivalent — much cheaper than enqueuing N individual mark_read
+        actions (each of which would walk pages to relocate its slot).
+        """
+        total_marked = 0
+        for page in range(1, 21):
+            try:
+                _, values = self._lib.req_act([
+                    self._lib.ActItem(
+                        self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX",
+                        attrs=[f'"PageNumber":"{page}"'],
+                    ),
+                    self._lib.ActItem(
+                        self._lib.ActItem.GL, "DEV2_LTE_SMS_RECVMSGENTRY",
+                        attrs=["index", "unread"],
+                    ),
+                ])
+            except OSError as e:
+                raise ConnectionError(str(e)) from e
+            if not values or not values[0]:
+                break
+            rows = values[0]
+            if not isinstance(rows, list):
+                break
+            unread_slots = [
+                slot for slot, row in enumerate(rows, start=1)
+                if isinstance(row, dict) and str(row.get("unread") or "0") == "1"
+            ]
+            if not unread_slots:
+                continue
+            acts = [self._lib.ActItem(
+                self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGBOX",
+                attrs=[f'"PageNumber":"{page}"'],
+            )]
+            for slot in unread_slots:
+                acts.append(self._lib.ActItem(
+                    self._lib.ActItem.SET, "DEV2_LTE_SMS_RECVMSGENTRY",
+                    f"{slot},0,0,0,0,0", attrs=['"unread":"0"'],
+                ))
+            try:
+                self._lib.req_act(acts)
+            except OSError as e:
+                raise ConnectionError(str(e)) from e
+            total_marked += len(unread_slots)
+        return total_marked
+
     # No router-side delete: the M8550 EX firmware rejects `del` on
     # DEV2_LTE_SMS_RECVMSGENTRY (errorcode 71011) and there's no settable attr
-    # we found that removes a message. The poller handles "delete" actions as
-    # a local soft-hide instead — see Store.hide_sms_local().
+    # we found that removes a message. The dashboard's "show only unread" view
+    # makes a local-only delete unnecessary — messages slide out of view when
+    # marked read.
 
     def force_reauth(self) -> bool:
         """Bypass the auth backoff and try to reclaim the session immediately."""

@@ -152,20 +152,28 @@ export function listSms(): { messages: SmsMessage[]; syncedAt: number } {
     .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sms_messages'")
     .get()
   if (!exists) return { messages: [], syncedAt: 0 }
-
-  // LEFT JOIN sms_hidden so soft-hidden ids stay out of the user-facing list.
-  // The table may not exist on older databases — coalesce via a defensive guard.
-  const hiddenTable = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sms_hidden'")
-    .get()
-  const query = hiddenTable
-    ? "SELECT m.id, m.sender, m.content, m.received_at, m.unread, m.synced_at " +
-      "FROM sms_messages m LEFT JOIN sms_hidden h ON h.sms_id = m.id " +
-      "WHERE h.sms_id IS NULL " +
-      "ORDER BY m.received_at DESC, m.id DESC"
-    : "SELECT id, sender, content, received_at, unread, synced_at FROM sms_messages " +
-      "ORDER BY received_at DESC, id DESC"
-  const rows = db.prepare(query).all() as SmsRow[]
+  // Reflect pending intent: a mark_read in sms_actions hasn't been applied to
+  // the router yet (the collector might be in auth-backoff), but the user has
+  // already asked for it — so render the row as read. Otherwise the optimistic
+  // UI update hides the row, then the next /api/sms poll resurrects it as
+  // unread until the collector catches up. mark_all_read (sms_id=0) suppresses
+  // every unread row at once. If the action eventually fails and gets dropped
+  // without taking effect, the next inbox poll will re-mirror unread=1 from
+  // the router and the UI naturally corrects.
+  const rows = db
+    .prepare(
+      "SELECT m.id, m.sender, m.content, m.received_at, m.synced_at, " +
+      "  CASE WHEN m.unread = 0 THEN 0 " +
+      "       WHEN EXISTS (" +
+      "         SELECT 1 FROM sms_actions a " +
+      "         WHERE a.action = 'mark_all_read' " +
+      "            OR (a.action = 'mark_read' AND a.sms_id = m.id)" +
+      "       ) THEN 0 " +
+      "       ELSE 1 END AS unread " +
+      "FROM sms_messages m " +
+      "ORDER BY m.received_at DESC, m.id DESC",
+    )
+    .all() as SmsRow[]
   const messages = rows.map((r) => ({
     id: r.id,
     sender: r.sender,

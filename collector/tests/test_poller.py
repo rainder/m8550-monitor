@@ -26,6 +26,8 @@ class FakeRouter:
         self.sms = sms if sms is not None else []
         self.sms_calls = 0
         self.mark_calls: list[int] = []
+        self.mark_all_calls = 0
+        self.mark_all_result: object = None  # None → use unread-count from cache
         self.reauth_calls = 0
         self.reauth_result: object = True
         # Per-id behaviour overrides — set to bool to short-circuit or to an
@@ -58,6 +60,12 @@ class FakeRouter:
         if isinstance(result, Exception):
             raise result
         return bool(result)
+
+    def mark_all_sms_read(self) -> int:
+        self.mark_all_calls += 1
+        if isinstance(self.mark_all_result, Exception):
+            raise self.mark_all_result
+        return 0 if self.mark_all_result is None else int(self.mark_all_result)
 
 
 def _store(tmp_path):
@@ -490,49 +498,53 @@ def test_tick_processes_queued_mark_read_action(tmp_path):
     assert store.list_sms()[0]["unread"] is False
 
 
-def test_tick_processes_queued_delete_action(tmp_path):
-    """Delete is a local soft-hide — the firmware doesn't support a real
-    router-side delete, so the message stays in the router inbox but our
-    list_sms() filters it out."""
+def test_tick_processes_queued_mark_all_read_action(tmp_path):
+    """Mark-all-read calls the router's bulk-mark path once and then mirrors
+    the result into the local cache so the UI clears unread badges before the
+    next ~60s inbox poll."""
     store = _store(tmp_path)
     store.replace_sms(ts=100, messages=[
-        SmsMessage(id=25, sender="X", content="t", received_at=10, unread=False),
-        SmsMessage(id=24, sender="Y", content="u", received_at=11, unread=False),
+        SmsMessage(id=25, sender="X", content="t", received_at=10, unread=True),
+        SmsMessage(id=24, sender="Y", content="u", received_at=11, unread=True),
+        SmsMessage(id=23, sender="Z", content="v", received_at=12, unread=False),
     ])
-    store.enqueue_sms_action(sms_id=25, action="delete", created_at=200)
+    store.enqueue_sms_action(sms_id=0, action="mark_all_read", created_at=200)
 
     router = FakeRouter([
         RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
                        wan_status=_wan_idle(), clients=[]),
     ])
+    router.mark_all_result = 2
     p = Poller(router, store, now=lambda: 300, sms_poll_interval=0)
     p.tick()
 
-    assert [r["id"] for r in store.list_sms()] == [24]
+    assert router.mark_all_calls == 1
+    assert router.mark_calls == []  # didn't fall through to per-id mark
     assert store.pending_sms_actions() == []
+    unread = {r["id"]: r["unread"] for r in store.list_sms()}
+    assert unread == {25: False, 24: False, 23: False}
 
 
-def test_tick_delete_action_does_not_call_router(tmp_path):
-    """Soft-hide is local-only — no router round-trip, so it can't be
-    deferred by a router blip."""
+def test_tick_mark_all_read_keeps_action_queued_on_router_blip(tmp_path):
+    """Transient ConnectionError on the bulk mark must not drop the action —
+    the user pressed the button, we'll retry next tick."""
     store = _store(tmp_path)
     store.replace_sms(ts=100, messages=[
-        SmsMessage(id=25, sender="X", content="t", received_at=10, unread=False),
+        SmsMessage(id=25, sender="X", content="t", received_at=10, unread=True),
     ])
-    store.enqueue_sms_action(sms_id=25, action="delete", created_at=200)
+    a = store.enqueue_sms_action(sms_id=0, action="mark_all_read", created_at=200)
 
-    # No snapshots queued — but the tick should still finish action
-    # processing because the snapshot happens first; if it succeeds we proceed.
     router = FakeRouter([
         RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
                        wan_status=_wan_idle(), clients=[]),
     ])
-    router.mark_result[25] = ConnectionError("would only matter for mark_read")
+    router.mark_all_result = ConnectionError("router blip")
     p = Poller(router, store, now=lambda: 300, sms_poll_interval=0)
     p.tick()
 
-    assert store.list_sms() == []
-    assert router.mark_calls == []  # mark wasn't requested
+    assert [a_["id"] for a_ in store.pending_sms_actions()] == [a]
+    # Local cache must not have been mutated since the router never confirmed.
+    assert store.list_sms()[0]["unread"] is True
 
 
 def test_tick_skips_local_change_when_router_says_message_gone(tmp_path):
@@ -560,14 +572,14 @@ def test_tick_skips_local_change_when_router_says_message_gone(tmp_path):
 def test_tick_keeps_action_queued_when_router_unreachable(tmp_path):
     """Transient ConnectionError on mark_read must not drop the action — it
     sits in the queue and is retried next tick. Later actions stay pending so
-    order is preserved (even local-hide deletes wait their turn)."""
+    FIFO order is preserved across the recovery."""
     store = _store(tmp_path)
     store.replace_sms(ts=100, messages=[
         SmsMessage(id=25, sender="X", content="t", received_at=10, unread=True),
-        SmsMessage(id=24, sender="Y", content="u", received_at=11, unread=False),
+        SmsMessage(id=24, sender="Y", content="u", received_at=11, unread=True),
     ])
     a1 = store.enqueue_sms_action(sms_id=25, action="mark_read", created_at=200)
-    a2 = store.enqueue_sms_action(sms_id=24, action="delete",    created_at=201)
+    a2 = store.enqueue_sms_action(sms_id=24, action="mark_read", created_at=201)
 
     router = FakeRouter([
         RouterSnapshot(total_bytes=1, rx_rate=0, tx_rate=0,
@@ -580,15 +592,14 @@ def test_tick_keeps_action_queued_when_router_unreachable(tmp_path):
     p.tick()
 
     assert [a["id"] for a in store.pending_sms_actions()] == [a1, a2]
-    assert {r["id"] for r in store.list_sms()} == {25, 24}  # nothing hidden yet
+    assert all(r["unread"] for r in store.list_sms())  # nothing applied yet
 
-    # Next tick: router recovered → mark_read completes, then the queued
-    # delete soft-hides id=24 locally.
+    # Next tick: router recovered → both mark_reads complete in order.
     del router.mark_result[25]
     p.tick()
-    assert router.mark_calls == [25, 25]  # first call was the blip
+    assert router.mark_calls == [25, 25, 24]  # first 25 was the blip
     assert store.pending_sms_actions() == []
-    assert [r["id"] for r in store.list_sms()] == [25]  # 24 hidden
+    assert all(not r["unread"] for r in store.list_sms())
 
 
 def test_tick_drops_mark_read_action_on_non_transient_failure(tmp_path):

@@ -112,9 +112,9 @@ class Poller:
 
         self.store.append_clients(ts=ts, clients=client_rows)
 
-        # User-initiated SMS actions (mark-read / delete) sit in a queue
-        # the web app populates. Process them eagerly — every tick — so
-        # the UI feels snappy even though the inbox itself polls slower.
+        # User-initiated SMS actions (mark-read, mark-all-read) sit in a
+        # queue the web app populates. Process them eagerly — every tick —
+        # so the UI feels snappy even though the inbox itself polls slower.
         self._process_sms_actions()
 
         # SMS — refresh on a slower cadence than the rate poll.
@@ -157,11 +157,9 @@ class Poller:
                     ok = self.router.mark_sms_read(sms_id)
                     if ok:
                         self.store.mark_sms_read_local(sms_id)
-                elif action == "delete":
-                    # M8550 firmware doesn't expose a working router-side
-                    # delete; this is a local soft-hide. The row stays on the
-                    # router but our list_sms() filters it out.
-                    self.store.hide_sms_local(sms_id)
+                elif action == "mark_all_read":
+                    self.router.mark_all_sms_read()
+                    self.store.mark_all_sms_read_local()
                 else:
                     log.warning("dropping unknown sms action %r for id=%s", action, sms_id)
                 self.store.delete_sms_action(a["id"])

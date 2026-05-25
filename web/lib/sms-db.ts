@@ -31,7 +31,7 @@ function getDb(): Database.Database {
   return writeDb
 }
 
-export type SmsAction = "mark_read" | "delete"
+export type SmsAction = "mark_read" | "mark_all_read"
 
 export function enqueueSmsAction(smsId: number, action: SmsAction): void {
   getDb()

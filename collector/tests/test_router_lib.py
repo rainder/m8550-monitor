@@ -655,6 +655,7 @@ def test_list_sms_aggregates_all_pages():
     fake_lib.ActItem = MagicMock()
     fake_lib.ActItem.SET = "so"
     fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.GET = "go"
 
     def _row(idx, content="hi", unread="0"):
         return {
@@ -668,10 +669,10 @@ def test_list_sms_aggregates_all_pages():
     page1 = [_row(i) for i in range(11, 19)]                   # 8 rows
     page2 = [_row(i) for i in range(3, 11)]                    # 8 rows
     page3 = [_row(i, content="Test", unread="1") for i in (1, 2)]  # 2 rows, one unread
-    # Each Python-level req_act call returns the result of ONE iteration
-    # (SET + GL bundled). The SET response has no "data" field so only the GL
-    # list ends up in `values`.
+    # Each Python-level req_act call returns the result of ONE iteration:
+    # first the totalNumber probe (GET RECVMSGBOX), then page-walk iterations.
     fake_lib.req_act.side_effect = [
+        ("raw", [{"totalNumber": "18"}]),  # 8 + 8 + 2
         ("raw", [page1]),
         ("raw", [page2]),
         ("raw", [page3]),
@@ -696,6 +697,65 @@ def test_list_sms_aggregates_all_pages():
         assert any(":" in a for a in call.kwargs.get("attrs", [])), (
             f"SET attrs missing colon-formatted PageNumber: {call.kwargs}"
         )
+
+
+def test_list_sms_raises_when_total_mismatches_collected_count():
+    """Root cause of historic spurious-notification bug: a transient
+    mid-iteration empty page made list_sms return a strict subset of the
+    inbox. ``replace_sms`` would then shrink the cache, and the next
+    successful poll would fire push notifications for every dropped id
+    (and wipe sms_hidden tombstones, so hidden messages reappeared). Guard
+    by comparing the page-walk total against RECVMSGBOX.totalNumber and
+    failing closed when they disagree."""
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.GET = "go"
+
+    def _row(idx):
+        return {
+            "index": str(idx), "from": "X", "content": "y",
+            "receivedTime": f"2026-02-{(idx % 28) + 1:02d} 10:00:00",
+            "unread": "0",
+        }
+
+    # Inbox claims 18, but the page walk hits an empty page after only 8 rows
+    # (page 2 returned [] — transient firmware hiccup).
+    fake_lib.req_act.side_effect = [
+        ("raw", [{"totalNumber": "18"}]),
+        ("raw", [[_row(i) for i in range(11, 19)]]),
+        ("raw", [[]]),
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    with pytest.raises(ConnectionError) as exc:
+        client.list_sms()
+    assert "truncated" in str(exc.value) or "18" in str(exc.value)
+
+
+def test_list_sms_tolerates_missing_total_number():
+    """Older firmware (or a missing field) returns no usable totalNumber. The
+    check must fail open: trust the page-walk rather than freezing the SMS
+    feature forever."""
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.GET = "go"
+
+    fake_lib.req_act.side_effect = [
+        ("raw", [{}]),  # no totalNumber
+        ("raw", [[{
+            "index": "1", "from": "X", "content": "y",
+            "receivedTime": "2026-02-20 10:00:00", "unread": "0",
+        }]]),
+        ("raw", [[]]),
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    msgs = client.list_sms()
+    assert [m.id for m in msgs] == [1]
 
 
 def test_mark_sms_read_locates_slot_then_sets_unread_zero():
@@ -767,16 +827,99 @@ def test_list_sms_stops_after_max_pages_on_repeating_router():
     fake_lib.ActItem = MagicMock()
     fake_lib.ActItem.SET = "so"
     fake_lib.ActItem.GL = "gl"
+    fake_lib.ActItem.GET = "go"
 
     same_page = [
         {"index": "1", "from": "X", "content": "a",
          "receivedTime": "2026-02-20 10:00:00", "unread": "0"},
     ]
-    # 60 identical responses — well past any sane page cap.
-    fake_lib.req_act.side_effect = [("raw", [same_page])] * 60
+    # totalNumber probe + 60 identical responses — well past any sane page cap.
+    fake_lib.req_act.side_effect = [
+        ("raw", [{"totalNumber": "1"}]),
+    ] + [("raw", [same_page])] * 60
 
     client = LibRouterClient(_lib=fake_lib)
     msgs = client.list_sms()
 
     assert [m.id for m in msgs] == [1]
     assert fake_lib.req_act.call_count < 60
+
+
+def test_mark_all_sms_read_bundles_set_ops_per_page():
+    """Walk inbox once. For each page with unread rows, bundle the
+    PageNumber SET + per-slot unread=0 SETs into a single req_act so we pay
+    one extra round-trip per page rather than per message."""
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+
+    # page 1: slots 1,3 unread (id 25, 23). page 2: slot 2 unread (id 9).
+    fake_lib.req_act.side_effect = [
+        # page 1 GL (after SET PageNumber=1)
+        ("raw", [[{"index": "25", "unread": "1"},
+                  {"index": "24", "unread": "0"},
+                  {"index": "23", "unread": "1"}]]),
+        # bulk SET for page 1 (one req_act with 1 SET-page + 2 SET-unread)
+        ("raw", [[]]),
+        # page 2 GL
+        ("raw", [[{"index": "10", "unread": "0"},
+                  {"index": "9",  "unread": "1"}]]),
+        # bulk SET for page 2
+        ("raw", [[]]),
+        # page 3 GL — empty terminates walk
+        ("raw", [[]]),
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    marked = client.mark_all_sms_read()
+    assert marked == 3
+
+    # The two bulk-SET calls (req_act calls #2 and #4) must each bundle one
+    # SET-page and N SET-entry acts; SET attrs must contain ':' to survive
+    # the EX serializer.
+    bulk_calls = [fake_lib.req_act.call_args_list[1], fake_lib.req_act.call_args_list[3]]
+    assert len(bulk_calls[0].args[0]) == 3  # 1 page-SET + 2 entry-SETs
+    assert len(bulk_calls[1].args[0]) == 2  # 1 page-SET + 1 entry-SET
+
+    entry_sets = [
+        c for c in fake_lib.ActItem.call_args_list
+        if c.args and c.args[0] == "so" and len(c.args) >= 2
+        and c.args[1] == "DEV2_LTE_SMS_RECVMSGENTRY"
+    ]
+    assert len(entry_sets) == 3
+    for call in entry_sets:
+        assert any('"unread":"0"' in a for a in call.kwargs["attrs"])
+
+
+def test_mark_all_sms_read_skips_pages_with_no_unread():
+    """A page that has zero unread rows must not produce any SET round-trip
+    — just keep walking. (Verifies we don't pay the bulk-SET cost when
+    there's nothing to do.)"""
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+
+    fake_lib.req_act.side_effect = [
+        # page 1 GL: all read
+        ("raw", [[{"index": "1", "unread": "0"}, {"index": "2", "unread": "0"}]]),
+        # page 2 GL: empty → terminate
+        ("raw", [[]]),
+    ]
+
+    client = LibRouterClient(_lib=fake_lib)
+    assert client.mark_all_sms_read() == 0
+    # Only two req_act calls: the two page-walk GETs. No bulk-SET.
+    assert fake_lib.req_act.call_count == 2
+
+
+def test_mark_all_sms_read_returns_zero_for_empty_inbox():
+    fake_lib = MagicMock()
+    fake_lib.ActItem = MagicMock()
+    fake_lib.ActItem.SET = "so"
+    fake_lib.ActItem.GL = "gl"
+    fake_lib.req_act.side_effect = [("raw", [[]])]
+
+    client = LibRouterClient(_lib=fake_lib)
+    assert client.mark_all_sms_read() == 0
