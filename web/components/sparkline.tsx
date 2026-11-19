@@ -6,6 +6,8 @@ type Props = {
   fill?: string
   width?: number
   height?: number
+  /** Fixed y-domain. Omit to auto-scale to the data's min/max. */
+  domain?: [number, number]
 }
 
 /**
@@ -13,14 +15,16 @@ type Props = {
  * gradient fill below. Handles nulls by breaking the line. Pure presentation —
  * no axes, no tooltips, no legend.
  */
-export function Sparkline({ values, stroke, fill, width = 96, height = 28 }: Props) {
+export function Sparkline({ values, stroke, fill, width = 96, height = 28, domain }: Props) {
   const real = values.filter((v): v is number => v !== null)
   if (real.length < 2) {
     return <div style={{ width, height }} className="opacity-40" />
   }
-  const min = Math.min(...real)
-  const max = Math.max(...real)
-  const span = Math.max(1, max - min)
+  const min = domain ? domain[0] : Math.min(...real)
+  const max = domain ? domain[1] : Math.max(...real)
+  // Auto-scaled series are byte rates, so a floor of 1 avoids a flat line
+  // blowing up; a fixed domain is trusted as-is (e.g. [0, 1] fractions).
+  const span = domain ? Math.max(Number.EPSILON, max - min) : Math.max(1, max - min)
 
   const stepX = width / Math.max(1, values.length - 1)
   const y = (v: number) => height - ((v - min) / span) * (height - 2) - 1

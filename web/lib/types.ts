@@ -62,6 +62,8 @@ export interface HistoryPoint {
   ts: number
   rxRate: number | null
   txRate: number | null
+  cpuPct: number | null   // 0..1
+  memPct: number | null   // 0..1
 }
 
 export interface HistoryResponse {

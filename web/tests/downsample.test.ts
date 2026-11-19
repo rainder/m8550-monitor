@@ -3,8 +3,11 @@ import { describe, it, expect } from "vitest"
 import { alignClientSeries, downsample } from "../lib/downsample"
 import type { HistoryPoint } from "../lib/types"
 
-function point(ts: number, rxRate: number | null, txRate: number | null): HistoryPoint {
-  return { ts, rxRate, txRate }
+function point(
+  ts: number, rxRate: number | null, txRate: number | null,
+  cpuPct: number | null = null, memPct: number | null = null,
+): HistoryPoint {
+  return { ts, rxRate, txRate, cpuPct, memPct }
 }
 
 describe("downsample", () => {
@@ -45,6 +48,19 @@ describe("downsample", () => {
     const out = downsample(points, 2)
     expect(out[0].rxRate).toBeNull()
     expect(out[1].rxRate).toBe(35)
+  })
+
+  it("averages cpu/mem fractions without integer rounding", () => {
+    const points: HistoryPoint[] = [
+      point(1, 0, 0, 0.1, 0.5),
+      point(2, 0, 0, 0.2, null),
+      point(3, 0, 0, null, null),
+      point(4, 0, 0, null, null),
+    ]
+    const out = downsample(points, 2)
+    expect(out[0].cpuPct).toBeCloseTo(0.15)
+    expect(out[0].memPct).toBe(0.5)
+    expect(out[1].cpuPct).toBeNull()
   })
 })
 

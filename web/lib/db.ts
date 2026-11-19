@@ -109,15 +109,24 @@ interface HistoryRow {
   ts: number
   rx_rate: number | null
   tx_rate: number | null
+  cpu_pct: number | null
+  mem_pct: number | null
 }
 
 export function samplesSince(sinceTs: number): HistoryPoint[] {
   const rows = getDb()
     .prepare(
-      "SELECT ts, rx_rate, tx_rate FROM samples WHERE ts >= ? ORDER BY ts ASC",
+      "SELECT ts, rx_rate, tx_rate, cpu_pct, mem_pct FROM samples " +
+      "WHERE ts >= ? ORDER BY ts ASC",
     )
     .all(sinceTs) as HistoryRow[]
-  return rows.map((r) => ({ ts: r.ts, rxRate: r.rx_rate, txRate: r.tx_rate }))
+  return rows.map((r) => ({
+    ts: r.ts,
+    rxRate: r.rx_rate,
+    txRate: r.tx_rate,
+    cpuPct: r.cpu_pct,
+    memPct: r.mem_pct,
+  }))
 }
 
 interface ClientHistoryRow {

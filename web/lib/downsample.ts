@@ -10,15 +10,23 @@ export function downsample(points: HistoryPoint[], target: number): HistoryPoint
       ts: bucket[0].ts,
       rxRate: avg(bucket.map((p) => p.rxRate)),
       txRate: avg(bucket.map((p) => p.txRate)),
+      cpuPct: mean(bucket.map((p) => p.cpuPct)),
+      memPct: mean(bucket.map((p) => p.memPct)),
     })
   }
   return out
 }
 
 function avg(values: (number | null)[]): number | null {
+  const m = mean(values)
+  return m === null ? null : Math.round(m)
+}
+
+/** Unrounded mean of non-null values — for 0..1 fractions like cpu/mem. */
+function mean(values: (number | null)[]): number | null {
   const real = values.filter((v): v is number => v !== null)
   if (real.length === 0) return null
-  return Math.round(real.reduce((a, b) => a + b, 0) / real.length)
+  return real.reduce((a, b) => a + b, 0) / real.length
 }
 
 export interface AlignedSeries {

@@ -11,6 +11,7 @@ import { SmsPanel } from "@/components/sms-panel"
 import { StatCard } from "@/components/stat-card"
 import { StatusIndicator } from "@/components/status-indicator"
 import { SystemGauges } from "@/components/system-gauges"
+import { SystemPanel } from "@/components/system-panel"
 import { TrafficChart } from "@/components/traffic-chart"
 import { formatBytes, formatRelative } from "@/lib/format"
 import type {
@@ -86,6 +87,13 @@ export default function Page() {
           </span>
           <span>used</span>
         </div>
+
+        <SystemPanel
+          cpuPct={sample?.cpuPct ?? null}
+          memPct={sample?.memPct ?? null}
+          points={points}
+          range={range}
+        />
 
         <TrafficChart
           points={points}
