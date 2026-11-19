@@ -124,7 +124,7 @@ Semantics observed on this firmware:
 | Nobody is logged in                  | `200` body has `isLogined=0` and `isBusy=0`         |
 | Someone else is logged in            | `200` body has `isLogined=1` and `isBusy=1`         |
 | **Phantom lock** (firmware bug)      | `200` body has `isLogined=0` and `isBusy=1`         |
-| We probed with our own JSESSIONID    | `406 Not Acceptable`                                |
+| Slot held (seen intermittently)      | `406 Not Acceptable` — even cookie-less             |
 
 We treat the slot as busy **only when both** `isLogined=1` and `isBusy=1`.
 The "phantom lock" state is a firmware bug: the previous session ended but
@@ -145,12 +145,47 @@ session. The popup in the web UI is implemented client-side; without the
 getBusy pre-check we'd kick Tether every time the collector restarts. Don't
 remove the getBusy probe without a fundamentally different detection scheme.
 
+**406 is not "your own cookie".** Observed 2026-11-19: while another session
+held the slot, cookie-less `getBusy` *and* the login handshake's
+`getGDPRParm` (surfaces as `Unknown error rsa_key! … 406`) both returned 406,
+so `force_reauth` cannot kick in that state. `force_reauth` maps it to
+"another session still holds the slot".
+
+#### Clean shutdown matters
+
+The collector is PID 1; it installs a SIGTERM handler and calls
+`LibRouterClient.logout()` on exit (skipped while backed off — the slot
+isn't ours). Before this, every `docker compose up --build` SIGKILLed it and
+orphaned our session until the router's ~10 min idle timeout. Verified live:
+`/cgi/logout` via `req_act` returns `''` and getBusy flips `isLogined` 1→0.
+
+Beware misattribution: on 2026-11-19 a *foreign* client kept re-taking the
+slot within 2–16s of it freeing (sessions lasting ~10–13 min, i.e. login then
+idle-expire), while our backoff probes only once per 60s — so we lost the race
+repeatedly and it looked like our own restarts were to blame. Check the
+online/offline history in `samples` before blaming a restart. The offline
+poll loop also wakes within ~1s of a queued router action (`Poller._wait`)
+so Reclaim doesn't sit out the 30s offline sleep.
+
 ### `unread`, `pageNumber`, `totalNumber` on RECVMSGBOX
 
 `GET DEV2_LTE_SMS_RECVMSGBOX` returns `unreadNumber` — but it only counts
 unread messages that are accessible (on currently-loaded page), not the full
 inbox. Don't trust it as the unread badge source; count via `sms_messages` in
 the local DB instead.
+
+### No temperature / thermal data is exposed
+
+Checked 2026-10-17 on fw `1.10.0 3.0.0 v60d8.0 Build 260728`: a read-only
+GO+GL sweep of all 481 non-action `DEV2_*` oids from the router's own
+`/js/oid_str.js` (`recon/dump_oids.py`) returned 1655 distinct attribute
+names and none of them is a temperature, thermal, or fan value. None of
+the ~150 authenticated `/main/*.htm` pages reads one either. The
+`INCLUDE_DEBUG_MIFI_THERMAL_INFO` / `INCLUDE_THERMAL_FAN` / `INCLUDE_FAN_SPEED`
+names in `oid_str.js` are just compile-time flag declarations shared across
+TP-Link firmwares, not evidence of a live sensor. `DEV2_X_TP_MIFI_CHGR`
+(battery/charger) only has `powerLevel`, `isCharging`, `linkType`. Don't
+burn time re-probing this unless the firmware changes.
 
 ## DB schema gotchas
 

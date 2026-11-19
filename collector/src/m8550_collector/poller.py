@@ -198,4 +198,16 @@ class Poller:
                 log.exception("tick failed")
             sample = self.store.latest_sample()
             sleep_for = interval if sample and sample["online"] else backoff_interval
-            time.sleep(sleep_for)
+            self._wait(sleep_for)
+
+    def _wait(self, seconds: float, sleep: Callable[[float], None] = time.sleep) -> None:
+        """Sleep up to ``seconds``, waking early if the user queued a router
+        action (Reclaim) — otherwise the offline 30s sleep makes the button
+        look hung."""
+        remaining = seconds
+        while remaining > 0:
+            step = min(1.0, remaining)
+            sleep(step)
+            remaining -= step
+            if self.store.pending_router_actions():
+                return

@@ -923,3 +923,41 @@ def test_mark_all_sms_read_returns_zero_for_empty_inbox():
 
     client = LibRouterClient(_lib=fake_lib)
     assert client.mark_all_sms_read() == 0
+
+
+def test_logout_calls_library_and_swallows_errors():
+    """Called on SIGTERM so a container restart frees the router's single
+    session slot instead of orphaning it for ~10 min. Must never raise."""
+    fake_lib = MagicMock()
+    client = LibRouterClient(_lib=fake_lib, busy_probe=lambda: False)
+    client.logout()
+    fake_lib.logout.assert_called_once()
+
+    fake_lib.logout.side_effect = OSError("router gone")
+    client.logout()  # no raise
+
+
+def test_force_reauth_406_explains_slot_is_held():
+    """The router answers 406 to the login handshake while another session
+    holds the slot. Surface that instead of the library's 'rsa_key' noise."""
+    fake_lib = MagicMock()
+    fake_lib.authorize.side_effect = Exception(
+        "Unknown error rsa_key! Response - <title>406 Not Acceptable</title>"
+    )
+    client = LibRouterClient(
+        _lib=fake_lib, busy_probe=lambda: False,
+        auth_backoff_seconds=60, _now=lambda: 1000,
+    )
+    with pytest.raises(AuthError) as exc:
+        client.force_reauth()
+    assert "another session" in str(exc.value)
+    assert client._kicked_until == 1060
+
+
+def test_logout_skipped_while_backed_off():
+    """In backoff someone else (Tether) holds the slot — don't touch it."""
+    fake_lib = MagicMock()
+    client = LibRouterClient(_lib=fake_lib, busy_probe=lambda: False)
+    client._kicked_until = 9999
+    client.logout()
+    fake_lib.logout.assert_not_called()

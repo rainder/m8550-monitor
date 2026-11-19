@@ -685,3 +685,29 @@ def test_poller_persists_wan_status(tmp_path):
         "SELECT sig_level, rsrp, isp_name, cpu_pct FROM samples"
     ).fetchone()
     assert row == (4, -82, "Bite", 0.59)
+
+
+def test_wait_returns_early_when_router_action_is_queued(tmp_path):
+    """While offline the poller sleeps 30s between ticks. A Reclaim click must
+    not sit in the queue for that whole window — _wait() polls the queue and
+    returns as soon as an action shows up."""
+    store = _store(tmp_path)
+    p = Poller(FakeRouter([]), store, sms_poll_interval=0)
+    slept: list[float] = []
+
+    def fake_sleep(s):
+        slept.append(s)
+        if len(slept) == 3:
+            store.enqueue_router_action(action="reauth", created_at=1)
+
+    p._wait(30, sleep=fake_sleep)
+    assert len(slept) == 3
+    assert sum(slept) < 30
+
+
+def test_wait_sleeps_full_duration_when_queue_empty(tmp_path):
+    store = _store(tmp_path)
+    p = Poller(FakeRouter([]), store, sms_poll_interval=0)
+    slept: list[float] = []
+    p._wait(5, sleep=slept.append)
+    assert sum(slept) == 5

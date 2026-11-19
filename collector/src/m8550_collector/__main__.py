@@ -1,4 +1,5 @@
 import logging
+import signal
 import sys
 
 from .config import load_config
@@ -33,11 +34,23 @@ def main() -> int:
         auth_backoff_seconds=cfg.auth_backoff_seconds,
         stale_session_threshold=cfg.stale_session_threshold,
     )
-    Poller(
-        router, store,
-        sms_poll_interval=cfg.sms_poll_interval,
-        vapid_keys=vapid,
-    ).run_forever(cfg.poll_interval)
+    # PID 1 in the container: without a handler Python ignores SIGTERM, Docker
+    # SIGKILLs us after the grace period, and our router session is orphaned
+    # (locking the next collector out for ~10 min). Turn it into SystemExit so
+    # the finally block logs out cleanly.
+    def _on_sigterm(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    try:
+        Poller(
+            router, store,
+            sms_poll_interval=cfg.sms_poll_interval,
+            vapid_keys=vapid,
+        ).run_forever(cfg.poll_interval)
+    finally:
+        log.info("shutting down; logging out of router")
+        router.logout()
     return 0
 
 

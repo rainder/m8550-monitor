@@ -566,11 +566,29 @@ class LibRouterClient:
             self._lib.authorize()
         except Exception as e:
             self._kicked_until = self._now() + self._auth_backoff_seconds
-            raise AuthError(
-                f"force reauth failed: {e}",
-                retry_after=self._auth_backoff_seconds,
-            ) from e
+            if "406 Not Acceptable" in str(e):
+                # The firmware 406s the login handshake (and even getBusy)
+                # while another session holds the slot. Typically Tether, the
+                # router web UI, or our own session orphaned by an unclean
+                # restart — the latter frees itself after ~10 min.
+                msg = ("router refused login (406): another session still "
+                       "holds the slot")
+            else:
+                msg = f"force reauth failed: {e}"
+            raise AuthError(msg, retry_after=self._auth_backoff_seconds) from e
         return True
+
+    def logout(self) -> None:
+        """Best-effort release of the router's single session slot. Called on
+        shutdown so a container restart doesn't orphan our session (which
+        would lock the next collector out for the router's ~10 min timeout).
+        Skipped while backed off: then the slot isn't ours to release."""
+        if self._kicked_until is not None:
+            return
+        try:
+            self._lib.logout()
+        except Exception as e:
+            log.warning("logout failed (ignored): %s", e)
 
     def _fetch_all(self):
         lte = self._lib.get_lte_status()
